@@ -1,0 +1,49 @@
+# Spendlens policy file — a sample policy for research-crawler-01.
+# The allowlist's second entry (0x1a2b…ef12) is an address that's actually
+# "allow"-ed in this repo's own mock dataset — a different address is used
+# in the dashboard's demo data as the deliberately BLOCKED one.
+version: 1
+agent: research-crawler-01
+
+budgets:
+  - scope: task
+    limit_usdc: 5.00
+  - scope: hour
+    limit_usdc: 2.00
+  - scope: day
+    limit_usdc: 20.00
+
+per_call:
+  max_usdc: 0.05
+  max_calls_per_minute: 600
+
+counterparties:
+  mode: allowlist
+  allow:
+    - "api.example.io"
+    - "0x1a2b3c4d5e6f7890abcdef1234567890abcdef12"
+  deny: []
+  first_seen:
+    action: hold
+    auto_allow_below_usdc: 0.001
+
+anomaly:
+  burn_rate:
+    baseline: ewma
+    halflife_minutes: 15
+    z_threshold: 3.0
+    action: hold
+  new_counterparty_rate:
+    max_per_hour: 5
+    action: alert
+
+quality:
+  failure_status_codes: [402, 429, 500, 502, 503, 504]
+  empty_body_is_failure: true
+  json_schema: "./schemas/observation.json"
+  max_latency_ms: 4000
+
+escalation:
+  webhook: "https://ops.example.io/hooks/spendlens"
+  timeout_seconds: 30
+  on_timeout: block

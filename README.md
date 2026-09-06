@@ -1,36 +1,263 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Spendlens
 
-## Getting Started
+> **An oversight and observability layer for AI agent spend on Arc.**
 
-First, run the development server:
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Arc Ready](https://img.shields.io/badge/Arc-EVM%20Compatible-blue)](https://developers.circle.com)
+[![TypeScript](https://img.shields.io/badge/TypeScript-Strict-blue)](https://www.typescriptlang.org/)
+[![Tests](https://img.shields.io/badge/Tests-Passing-brightgreen)](https://github.com)
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+---
+
+## 1. Overview
+
+AI agents can now spend micropayments entirely on their own. Circle built the infrastructure for it with **Nanopayments** and **Agent Wallets**: an agent can pay a fraction of a cent for every API call it makes, in seconds.
+
+But that infrastructure only guarantees the payment goes through — it **doesn't measure whether it was correct, safe, or worth what was paid for**.
+
+**Spendlens** is the software layer that fills that gap:
+- Screens every payment an agent makes through a **policy filter** before it settles,
+- Logs every decision to an **immutable event ledger**,
+- Measures the **quality of the service received** and the resulting waste ratio,
+- Compares local records against **Arc Gateway's batched on-chain settlement** to catch signing-key leaks.
+
+> **Positioning:** *"Circle built the payment rail. We show you what's actually happening on it."*
+
+---
+
+## 2. Three Critical Failure Scenarios Solved
+
+| Scenario | Problem | Status Quo | How Spendlens Solves It |
+|---|---|---|---|
+| **A: Prompt Injection** | The agent is redirected to an attacker's API via a hidden instruction on a crawled page, making 4,000 rapid calls ($0.003/call). | The wallet never alarms since no single call exceeds the per-call limit ($0.05). Funds drain. | **EWMA Burn Rate & Allowlist** catch the anomaly and halt the flow within seconds. |
+| **B: Silent Quality Degradation** | A data provider breaks and starts returning empty-bodied `200 OK` responses. | Payment keeps flowing uninterrupted since the HTTP status is still successful; money is wasted. | **Quality Classifier & Waste Analysis** immediately surfaces *"31% of spend went unmatched."* |
+| **C: Key Leakage** | The agent's signing key leaks; the attacker signs authorizations within the existing policy's limits. | Wallet policy is never violated, so the local agent has no idea. | **Arc Reconciliation Audit** compares on-chain spend against the ledger (`delta > tolerance` &rarr; CRITICAL alert & automatic halt). |
+
+---
+
+## 3. Five Core Components
+
+```
+                                  +-------------------------------------------------+
+                                  |         AI Agent (e.g. Research Crawler)         |
+                                  +-------------------------------------------------+
+                                                           |
+                                           pay.fetch("https://api.example.io/v1/data")
+                                                           |
+                                                           v
++---------------------------------------------------------------------------------------------------+
+| Spendlens Layer                                                                                   |
+|                                                                                                   |
+|  [ Component 1: Interception SDK ]                                                                |
+|      402 Payment Required Detection & Pre-Signing Interception                                    |
+|              |                                                                                    |
+|              v                                                                                    |
+|  [ Component 2: Declarative Policy Engine (YAML) ]                                                |
+|      1. Denylist -> 2. Per-call -> 3. Budgets -> 4. Counterparties -> 5. Anomaly -> 6. Quality    |
+|              |                                                                                    |
+|              +---> (BLOCK / HOLD / ALLOW)                                                         |
+|              |                                                                                    |
+|              v                                                                                    |
+|  [ Agent Signing (Non-Custodial) ] ──> HTTP Request Completed ──> [ Component 4: Quality Analysis ]|
+|              |                                                                                    |
+|              v (Async, non-blocking queue)                                                        |
+|  [ Component 3: Append-Only Event Ledger ]                                                        |
+|      SQLite / PostgreSQL (bodies never stored, only a SHA-256 digest is kept)                     |
++---------------------------------------------------------------------------------------------------+
+                                                           |
+                                                           v
++---------------------------------------------------------------------------------------------------+
+| Arc Blockchain & Circle Gateway                                                                   |
+|                                                                                                   |
+|  [ Component 5: Arc Reconciliation Audit ]                                                        |
+|      Gateway Net On-Chain Settlement <─── Delta Comparison ───> Spendlens Local Ledger             |
++---------------------------------------------------------------------------------------------------+
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+---
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## 4. Quickstart (local)
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Spendlens is a multi-tenant app: users sign up, then register agents and mint
+per-agent API keys the SDK uses to stream telemetry. It needs Postgres and a
+few environment variables.
 
-## Learn More
+### Step 1: Install & configure
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+git clone https://github.com/your-org/spendlens.git
+cd spendlens
+npm install
+cp .env.example .env          # set BETTER_AUTH_SECRET (openssl rand -base64 32)
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+### Step 2: Start Postgres & run migrations
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```bash
+docker compose up -d db        # Postgres 16 on localhost:5432
+npm run db:migrate             # apply drizzle/*.sql
+npm run dev                    # http://localhost:3000
+```
 
-## Deploy on Vercel
+Open `http://localhost:3000/signup`, create an account, and follow the
+verification link (with no e-mail provider configured it is printed to the dev
+server console). You land on `/dashboard`. Use **Load sample data** to populate
+every screen, or **New agent** to start clean.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+> One-command production run instead: `docker compose up -d --build` — see
+> [DEPLOY.md](DEPLOY.md).
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+### Step 3: Write a Policy File (`policies/research-crawler-01.yaml`)
+
+```yaml
+version: 1
+agent: research-crawler-01
+
+budgets:
+  - scope: task
+    limit_usdc: 5.00
+  - scope: hour
+    limit_usdc: 2.00
+  - scope: day
+    limit_usdc: 20.00
+
+per_call:
+  max_usdc: 0.05
+  max_calls_per_minute: 600
+
+counterparties:
+  mode: allowlist
+  allow:
+    - "api.example.io"
+    - "0x1a2b3c4d5e6f7890abcdef1234567890abcdef12"
+  deny: []
+  first_seen:
+    action: hold
+    auto_allow_below_usdc: 0.001
+
+anomaly:
+  burn_rate:
+    baseline: ewma
+    halflife_minutes: 15
+    z_threshold: 3.0
+    action: hold
+  new_counterparty_rate:
+    max_per_hour: 5
+    action: alert
+
+quality:
+  failure_status_codes: [402, 429, 500, 502, 503, 504]
+  empty_body_is_failure: true
+  max_latency_ms: 4000
+
+escalation:
+  webhook: "https://ops.example.io/hooks/spendlens"
+  timeout_seconds: 30
+  on_timeout: block
+```
+
+### Step 4: One-Line Integration in Agent Code
+
+In the dashboard, open your agent → **Create key**, copy the `sl_…` value once,
+and pass it as `apiKey`. Telemetry is sent to the ingest endpoint with an
+`Authorization: Bearer <apiKey>` header and lands in *your* account only.
+
+```typescript
+import { guard } from "@spendlens/sdk";
+
+// Wrap the agent's HTTP client
+const pay = guard({
+  agentId: "research-crawler-01",
+  apiKey: process.env.SPENDLENS_API_KEY,            // the sl_… key from the dashboard
+  sink: "http://localhost:3000/api/authorizations", // your Spendlens URL + /api/authorizations
+  policy: "./policies/research-crawler-01.yaml",
+});
+
+// Use pay.fetch instead of the standard fetch:
+const res = await pay.fetch("https://api.example.io/v1/data", {
+  taskId: "task-market-001",
+});
+
+const data = await res.json();
+```
+
+`http://localhost:3000` is the marketing page; `http://localhost:3000/dashboard`
+is the (authenticated) dashboard.
+
+---
+
+## 5. Dashboard Screens & Features
+
+- **Marketing page (`/`)**: A single-page site positioning the product, walking through the three failure scenarios, and including a live preview rendered with the dashboard's real components (not a static image) on sample data, plus a "how it works" walkthrough.
+- **Overview (`/dashboard`)**: Four core KPI cards at the top (Total Spend, Unmatched Spend & %, Blocked Calls, Reconciliation Status) and a headline waste-analysis sentence.
+- **Event Ledger (`/dashboard/ledger`)**: A filterable, searchable, paginated authorization ledger. Clicking any record opens a **Telemetry Drawer** (latency, SHA-256 digest, nonce, settlement ID, triggered rule).
+- **Agent Fleet (`/dashboard/agents` & `/dashboard/agents/[agentId]`)**: Spend, efficiency, and anomaly status for every agent, with an emergency kill switch.
+- **Counterparties & Reputation (`/dashboard/counterparties`)**: Quality scores, empty-body/error rates, and first-seen timestamps for every API provider paid.
+- **Arc Reconciliation Audit (`/dashboard/reconciliation`)**: Comparison of Arc Gateway's on-chain batched settlement against the local ledger (🔴 CRITICAL / 🟡 PENDING / 🟢 OK).
+- **Policy Management (`/dashboard/policies`)**: A live YAML editor with instant Zod schema validation and a rule summary.
+- **Anomaly & Rate Monitoring (`/dashboard/anomalies`)**: EWMA burn rate, z-score thresholds, and cold-start (warmup) status.
+- **Interactive Simulator (`/dashboard/simulator`)**: A test environment where scenarios A, B, and C can be run with one click and the resulting telemetry observed live.
+
+---
+
+## 6. Security & Threat Model
+
+- **Non-Custodial Architecture**: The Spendlens SDK never touches the agent's private key. It only renders a *"sign"* or *"block"* verdict; signing is done locally by the agent's own signer.
+- **Zero Response-Body Storage (Privacy-First)**: Response bodies are never stored anywhere. After quality validation, only the response size and a 256-bit SHA-256 digest are kept; the body is discarded.
+- **Non-Blocking Async Telemetry**: Ledger writes run on an async queue; the observability layer never adds latency to the agent's API response time.
+
+---
+
+## 7. Accounts, Tenancy & Auth
+
+- **Auth** is [Better Auth](https://better-auth.com): e-mail + password with
+  verification and password reset, plus optional Google / GitHub sign-in
+  (enabled only when the matching `*_CLIENT_ID` / `*_CLIENT_SECRET` are set).
+- **Every row is tenant-scoped.** Agents, API keys, policies, the ledger, and
+  reconciliation all carry a `userId`; every dashboard query and API route is
+  scoped to the signed-in user (see `src/lib/db/repository.ts` and
+  `src/lib/auth/dal.ts`). The SDK ingest route authenticates by API key and
+  writes to that key's owner.
+- **API keys** are per-agent bearer tokens (`sl_` + 40 hex). Only a SHA-256
+  hash is stored; the plaintext is shown once. A halted agent rejects ingest
+  with `423`.
+- The marketing page's live preview still renders the deterministic sample
+  dataset in `src/lib/mock/` — it is not connected to the database.
+
+---
+
+## 8. Test Suite & Validation
+
+```bash
+npm test              # unit tests (engines, SDK, policy template, API-key crypto, slugs)
+npx tsc --noEmit      # type-check
+npm run build         # production build
+npm run db:migrate    # apply pending migrations (needs DATABASE_URL / .env)
+npm run db:studio     # drizzle-kit studio
+```
+
+---
+
+## 9. Deployment
+
+Self-hosted via Docker Compose (Next.js standalone + Postgres 16). Migrations
+run automatically on container boot from `instrumentation.register()`.
+
+```bash
+cp .env.example .env   # set APP_URL, BETTER_AUTH_SECRET, POSTGRES_PASSWORD, e-mail
+docker compose up -d --build
+```
+
+Put a TLS-terminating reverse proxy (Caddy / nginx) in front of port 3000.
+Full step-by-step, OAuth setup, e-mail, and backups: **[DEPLOY.md](DEPLOY.md)**.
+
+Required environment variables: `APP_URL`, `NEXT_PUBLIC_APP_URL`,
+`BETTER_AUTH_SECRET`, `DATABASE_URL` (compose builds this from
+`POSTGRES_*`). Optional: `GITHUB_CLIENT_ID/SECRET`, `GOOGLE_CLIENT_ID/SECRET`,
+`RESEND_API_KEY` or `SMTP_*`.
+
+---
+
+## License
+
+This project is available under the [MIT License](LICENSE).

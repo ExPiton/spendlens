@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 280 80" width="280" height="80">
+  <g transform="translate(10, 10)">
+    <!-- Spendlens Lens Mark (60x60) -->
+    <g transform="scale(0.6)">
+      <circle cx="50" cy="50" r="36" fill="none" stroke="#22262a" stroke-width="12" />
+      <circle
+        cx="50"
+        cy="50"
+        r="36"
+        fill="none"
+        stroke="#3bdf7a"
+        stroke-width="12"
+        stroke-linecap="round"
+        stroke-dasharray="155.38 226.19"
+        transform="rotate(-90 50 50)"
+      />
+      <circle cx="50" cy="50" r="7" fill="#22262a" />
+    </g>
+
+    <!-- Wordmark: "spend" semibold, "lens" regular -->
+    <text x="76" y="42" font-family="system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="34" letter-spacing="-0.03em" fill="#22262a">
+      <tspan font-weight="600">spend</tspan><tspan font-weight="400">lens</tspan>
+    </text>
+  </g>
+</svg>

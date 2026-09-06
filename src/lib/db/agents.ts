@@ -1,0 +1,124 @@
+import "server-only";
+import { and, asc, eq } from "drizzle-orm";
+import { db } from "./index";
+import { agent as agentTable, policy as policyTable } from "./schema";
+import { defaultPolicyYaml, parsePolicyYaml } from "@/lib/policy-file";
+import { SLUG_RE, normalizeSlug } from "@/lib/slug";
+
+export { normalizeSlug };
+
+export interface AgentRecord {
+  id: string;
+  slug: string;
+  label: string;
+  status: "active" | "paused";
+  createdAt: string;
+}
+
+export async function listAgentRecords(userId: string): Promise<AgentRecord[]> {
+  const rows = await db
+    .select()
+    .from(agentTable)
+    .where(eq(agentTable.userId, userId))
+    .orderBy(asc(agentTable.createdAt));
+  return rows.map((r) => ({
+    id: r.id,
+    slug: r.slug,
+    label: r.label,
+    status: r.status === "paused" ? "paused" : "active",
+    createdAt: r.createdAt.toISOString(),
+  }));
+}
+
+export async function getAgentRecordBySlug(
+  userId: string,
+  slug: string,
+): Promise<AgentRecord | null> {
+  const [r] = await db
+    .select()
+    .from(agentTable)
+    .where(and(eq(agentTable.userId, userId), eq(agentTable.slug, slug)))
+    .limit(1);
+  if (!r) return null;
+  return {
+    id: r.id,
+    slug: r.slug,
+    label: r.label,
+    status: r.status === "paused" ? "paused" : "active",
+    createdAt: r.createdAt.toISOString(),
+  };
+}
+
+/** Creates an agent and seeds its default policy in one transaction. */
+export async function createAgent(
+  userId: string,
+  input: { slug: string; label: string },
+): Promise<AgentRecord> {
+  const slug = normalizeSlug(input.slug);
+  if (!SLUG_RE.test(slug)) {
+    throw new Error(
+      "Agent id must be 3–50 chars, lowercase letters, numbers and hyphens.",
+    );
+  }
+  const label = input.label.trim() || slug;
+
+  const [dupe] = await db
+    .select({ id: agentTable.id })
+    .from(agentTable)
+    .where(and(eq(agentTable.userId, userId), eq(agentTable.slug, slug)))
+    .limit(1);
+  if (dupe) throw new Error(`You already have an agent called "${slug}".`);
+
+  const raw = defaultPolicyYaml(slug);
+  const { config } = parsePolicyYaml(raw);
+
+  return db.transaction(async (tx) => {
+    const [row] = await tx
+      .insert(agentTable)
+      .values({ userId, slug, label })
+      .returning();
+    await tx.insert(policyTable).values({
+      agentId: row.id,
+      userId,
+      rawYaml: raw,
+      config,
+      version: 1,
+      updatedAt: new Date(),
+    });
+    return {
+      id: row.id,
+      slug: row.slug,
+      label: row.label,
+      status: "active" as const,
+      createdAt: row.createdAt.toISOString(),
+    };
+  });
+}
+
+export async function setAgentStatus(
+  userId: string,
+  agentId: string,
+  status: "active" | "paused",
+): Promise<void> {
+  await db
+    .update(agentTable)
+    .set({ status, updatedAt: new Date() })
+    .where(and(eq(agentTable.id, agentId), eq(agentTable.userId, userId)));
+}
+
+export async function renameAgent(
+  userId: string,
+  agentId: string,
+  label: string,
+): Promise<void> {
+  await db
+    .update(agentTable)
+    .set({ label: label.trim(), updatedAt: new Date() })
+    .where(and(eq(agentTable.id, agentId), eq(agentTable.userId, userId)));
+}
+
+export async function deleteAgent(userId: string, agentId: string): Promise<void> {
+  await db
+    .delete(agentTable)
+    .where(and(eq(agentTable.id, agentId), eq(agentTable.userId, userId)));
+}
