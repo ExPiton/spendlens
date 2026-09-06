@@ -39,7 +39,7 @@ cp .env.example .env
 | `BETTER_AUTH_SECRET` | `openssl rand -base64 32` ile üret |
 | `POSTGRES_PASSWORD` | Güçlü bir parola |
 | `EMAIL_FROM` | Gönderen adresi, örn. `Spendlens <no-reply@ornek.com>` |
-| `RESEND_API_KEY` **veya** `SMTP_*` | E-posta gönderimi. İkisi de boşsa doğrulama linkleri sadece konteyner loguna yazılır (sadece test için). |
+| `RESEND_API_KEY` **veya** `SMTP_*` | Parola sıfırlama e-postası için. İkisi de boşsa sıfırlama linki sadece konteyner loguna yazılır. (E-posta **doğrulaması** şu an kapalı; kayıt olan kullanıcı doğrudan girer.) |
 
 `DATABASE_URL`'i elle ayarlamana gerek yok — `docker-compose.yml`, `web`
 konteyneri için onu `db` servisinden otomatik kurar.
@@ -100,10 +100,15 @@ gönderilir.
 ## 6. İlk hesap
 
 1. `https://spendlens.ornek.com/signup` → kayıt ol
-2. Doğrulama e-postasındaki linke tıkla (e-posta ayarlı değilse
-   `docker compose logs web` içinde linki bulursun)
-3. Panele düşersin. "Load sample data" ile örnek veriyi yükleyip tüm ekranları
-   dolu görebilirsin, ya da doğrudan **New agent** ile başlayabilirsin.
+2. Doğrudan panele düşersin (e-posta doğrulaması şu an kapalı).
+3. "Load sample data" ile örnek veriyi yükleyip tüm ekranları dolu
+   görebilirsin, ya da doğrudan **New agent** ile başlayabilirsin.
+
+> E-posta doğrulamasını sonra açmak istersen: `src/lib/auth/index.ts` içinde
+> `requireEmailVerification` ve `emailVerification.sendOnSignUp` değerlerini
+> `true` yap, `src/lib/auth/dal.ts`'deki `requireVerifiedUser`'a
+> `emailVerified` kontrolünü geri ekle. Bir e-posta sağlayıcısı (`RESEND_API_KEY`
+> ya da `SMTP_*`) şart.
 
 ---
 

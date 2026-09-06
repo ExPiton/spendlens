@@ -34,7 +34,9 @@ export function SignupForm() {
       setPending(false);
       return;
     }
-    router.push(`/verify-email?email=${encodeURIComponent(email)}`);
+    // Verification is not required — signup signs the user in.
+    router.push("/dashboard");
+    router.refresh();
   }
 
   return (

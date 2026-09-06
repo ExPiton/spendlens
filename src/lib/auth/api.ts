@@ -12,9 +12,6 @@ export async function requireSessionUser(): Promise<
   if (!session?.user) {
     return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   }
-  if (!session.user.emailVerified) {
-    return NextResponse.json({ error: "Email not verified" }, { status: 403 });
-  }
   return { userId: session.user.id };
 }
 

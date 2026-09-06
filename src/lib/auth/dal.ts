@@ -24,12 +24,10 @@ export async function requireUser() {
   return session;
 }
 
-/** Redirects to /login when signed out, or /verify-email when the address is
- *  unconfirmed. The dashboard requires this. */
+/** The gate every dashboard surface uses. Currently identical to
+ *  `requireUser()` — e-mail verification is not enforced. Kept as a distinct
+ *  name so re-enabling verification is a one-place change: restore the
+ *  `emailVerified` check here (and the two auth-config flags). */
 export async function requireVerifiedUser() {
-  const session = await requireUser();
-  if (!session.user.emailVerified) {
-    redirect("/verify-email");
-  }
-  return session;
+  return requireUser();
 }

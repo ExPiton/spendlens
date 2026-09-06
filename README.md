@@ -99,10 +99,9 @@ npm run db:migrate             # apply drizzle/*.sql
 npm run dev                    # http://localhost:3000
 ```
 
-Open `http://localhost:3000/signup`, create an account, and follow the
-verification link (with no e-mail provider configured it is printed to the dev
-server console). You land on `/dashboard`. Use **Load sample data** to populate
-every screen, or **New agent** to start clean.
+Open `http://localhost:3000/signup` and create an account — you land straight
+on `/dashboard` (e-mail verification is off). Use **Load sample data** to
+populate every screen, or **New agent** to start clean.
 
 > One-command production run instead: `docker compose up -d --build` — see
 > [DEPLOY.md](DEPLOY.md).
@@ -211,8 +210,11 @@ is the (authenticated) dashboard.
 ## 7. Accounts, Tenancy & Auth
 
 - **Auth** is [Better Auth](https://better-auth.com): e-mail + password with
-  verification and password reset, plus optional Google / GitHub sign-in
-  (enabled only when the matching `*_CLIENT_ID` / `*_CLIENT_SECRET` are set).
+  password reset, plus optional Google / GitHub sign-in (enabled only when the
+  matching `*_CLIENT_ID` / `*_CLIENT_SECRET` are set). E-mail **verification is
+  currently off** — signup logs the user straight in; re-enable via
+  `requireEmailVerification` in `src/lib/auth/index.ts` and the check in
+  `src/lib/auth/dal.ts`.
 - **Every row is tenant-scoped.** Agents, API keys, policies, the ledger, and
   reconciliation all carry a `userId`; every dashboard query and API route is
   scoped to the signed-in user (see `src/lib/db/repository.ts` and

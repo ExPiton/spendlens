@@ -48,7 +48,10 @@ export const auth = betterAuth({
   }),
   emailAndPassword: {
     enabled: true,
-    requireEmailVerification: true,
+    // Verification is disabled for now — users can sign in immediately after
+    // signup. Flip this back to `true` (and `emailVerification.sendOnSignUp`)
+    // once an e-mail provider is configured.
+    requireEmailVerification: false,
     minPasswordLength: 8,
     sendResetPassword: async ({ user, url }) => {
       await sendEmail({
@@ -61,7 +64,9 @@ export const auth = betterAuth({
     },
   },
   emailVerification: {
-    sendOnSignUp: true,
+    // No verification e-mail on signup while verification is not required.
+    // The manual "resend" endpoint still works if you re-enable the flow.
+    sendOnSignUp: false,
     autoSignInAfterVerification: true,
     sendVerificationEmail: async ({ user, url }) => {
       await sendEmail({
