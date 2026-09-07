@@ -31,6 +31,7 @@ export async function POST(request: NextRequest) {
     const agent = await createAgent(auth.userId, {
       slug: String(body?.slug ?? ""),
       label: String(body?.label ?? body?.slug ?? ""),
+      walletAddress: body?.walletAddress ? String(body.walletAddress) : null,
     });
     return NextResponse.json({ agent }, { status: 201 });
   } catch (err) {

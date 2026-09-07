@@ -13,6 +13,8 @@
     "test:e2e": "node scripts/e2e-test.mjs",
     "build:sdk": "tsup && node scripts/pack-sdk.mjs",
     "example": "node examples/run.mjs",
+    "reconcile:arc": "node scripts/reconcile-arc.mjs",
+    "new-wallet": "node scripts/new-wallet.mjs",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx scripts/db-migrate.ts",
     "db:studio": "drizzle-kit studio",

@@ -159,6 +159,34 @@ panelden **Halt agent (kill switch)** ile durdurabilirsin; bu durumda ingest
 > Tüm döngüyü 30 saniyede görmek için repo kökünde:
 > `SPENDLENS_URL=... SPENDLENS_API_KEY=sl_... SPENDLENS_AGENT_ID=... npm run example`
 
+### Gerçek Circle Nanopayments (Arc + Circle Gateway)
+
+Gazsız, toplu (batched) USDC mikroödemeleri için genel `guard()` yerine
+`@circle-fin/x402-batching`'in `GatewayClient`'ını `guardGateway` ile sar:
+
+```bash
+npm run new-wallet                 # AGENT_ADDRESS/AGENT_PRIVATE_KEY -> .env
+# AGENT_ADDRESS'i https://faucet.circle.com'dan testnet USDC ile fonla (Circle girişi gerekir)
+npm install @circle-fin/x402-batching viem
+```
+
+```ts
+import { GatewayClient } from "@circle-fin/x402-batching/client";
+import { guardGateway } from "@spendlens/sdk";
+
+const client = new GatewayClient({ chain: "arcTestnet", privateKey });
+// await client.deposit("1");   // bir kez, on-chain
+const pay = guardGateway(client, { agentId: "research-crawler-01" });
+const { data, transaction } = await pay.fetch("https://gercek-x402-endpoint/premium", { taskId: "t1" });
+```
+
+Cüzdan anahtarı `GatewayClient` içinde kalır — Spendlens policy'yi
+`onBeforePaymentCreation` hook'una takar. Zincir uzlaşmasını panele beslemek
+için: `npm run reconcile:arc` (agent sayfasında cüzdan adresini de gir).
+
+Arc chain id'leri: **testnet 5042002**, **mainnet 5042**. Mainnet için
+`ARC_NETWORK=mainnet` ve `ARC_MAINNET_RPC_URL` ayarla. Ayrıntı: **ARC.md**.
+
 ---
 
 ## 8. Bakım

@@ -8,6 +8,7 @@ import {
   deleteAgent,
   renameAgent,
   setAgentStatus,
+  setAgentWallet,
 } from "@/lib/db/agents";
 import { createApiKey, revokeApiKey } from "@/lib/db/api-keys";
 import { upsertPolicy } from "@/lib/db/policy";
@@ -58,6 +59,24 @@ export async function renameAgentAction(formData: FormData): Promise<void> {
     String(formData.get("label") ?? ""),
   );
   revalidatePath("/dashboard", "layout");
+}
+
+export async function setAgentWalletAction(
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const { user } = await requireVerifiedUser();
+  try {
+    await setAgentWallet(
+      user.id,
+      String(formData.get("agentId") ?? ""),
+      String(formData.get("walletAddress") ?? ""),
+    );
+    revalidatePath("/dashboard/agents/[agentId]", "page");
+    return { ok: true };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "Invalid address." };
+  }
 }
 
 export async function deleteAgentAction(formData: FormData): Promise<void> {

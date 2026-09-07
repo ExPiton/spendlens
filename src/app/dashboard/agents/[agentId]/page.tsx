@@ -10,6 +10,8 @@ import { WasteCallout } from "@/components/dashboard/WasteCallout";
 import { InteractiveDecisionsTable } from "@/components/dashboard/InteractiveDecisionsTable";
 import { ApiKeysPanel } from "@/components/dashboard/ApiKeysPanel";
 import { AgentControls } from "@/components/dashboard/AgentControls";
+import { AgentWallet } from "@/components/dashboard/AgentWallet";
+import { ARC } from "@/lib/arc";
 import {
   formatUsdcTotal,
   formatPercent,
@@ -118,6 +120,15 @@ export default async function AgentDetailPage(props: AgentDetailPageProps) {
         keys={keys}
         ingestUrl={ingestUrl}
         appUrl={appUrl}
+      />
+
+      {/* Arc wallet & reconciliation */}
+      <AgentWallet
+        agentId={record.id}
+        walletAddress={record.walletAddress}
+        faucetUrl={ARC.faucetUrl}
+        explorerUrl={ARC.explorerUrl}
+        arcLabel={`Arc ${ARC.network === "mainnet" ? "Mainnet" : "Testnet"}`}
       />
 
       {/* Policy snippet */}

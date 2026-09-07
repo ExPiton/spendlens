@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPolicyBySlug } from "@/lib/db/policy";
 import { requireSessionUser, isResponse } from "@/lib/auth/api";
+import { ARC } from "@/lib/arc";
 import { PolicyEngine } from "@/sdk/policy-engine";
 import { classifyQuality } from "@/lib/engine/classifyQuality";
 import type { AuthorizationRecord } from "@/lib/contracts";
@@ -58,7 +59,7 @@ export async function POST(request: NextRequest) {
           decision: verdict.decision === "block" ? "block" : "hold_denied",
           ruleHit: verdict.ruleHit || "counterparties.mode",
           nonce: null,
-          chainId: 5042, // Arc Testnet
+          chainId: ARC.chainId,
           httpStatus: null,
           latencyMs: null,
           bodyBytes: null,
@@ -118,7 +119,7 @@ export async function POST(request: NextRequest) {
           decision: "allow",
           ruleHit: null,
           nonce: `sim_nonce_${i}`,
-          chainId: 5042,
+          chainId: ARC.chainId,
           httpStatus: 200,
           latencyMs: 120,
           bodyBytes: 0,
@@ -198,7 +199,7 @@ export async function POST(request: NextRequest) {
       decision: recordDecision,
       ruleHit: verdict.ruleHit,
       nonce: verdict.decision === "allow" ? `nonce_${Date.now()}` : null,
-      chainId: 5042,
+      chainId: ARC.chainId,
       httpStatus: verdict.decision === "allow" ? customStatus : null,
       latencyMs: verdict.decision === "allow" ? customLatencyMs : null,
       bodyBytes: verdict.decision === "allow" ? customBodyBytes : null,

@@ -211,6 +211,29 @@ everything else passes straight through untouched. Without a `signer` it uses a
 clearly-logged mock signature — policy, telemetry and quality analysis are
 real, but the payment will not settle.
 
+### Circle Nanopayments (Arc + Circle Gateway)
+
+For the real Circle path — gas-free USDC micropayments settled in batches on
+Arc — wrap `@circle-fin/x402-batching`'s `GatewayClient` with `guardGateway`.
+Spendlens hooks its policy engine into `onBeforePaymentCreation`; the wallet key
+never leaves `GatewayClient`.
+
+```typescript
+import { GatewayClient } from "@circle-fin/x402-batching/client";
+import { guardGateway } from "@spendlens/sdk";
+
+const client = new GatewayClient({ chain: "arcTestnet", privateKey });
+const pay = guardGateway(client, { agentId: "research-crawler-01" });
+const { data, transaction } = await pay.fetch("https://api.example.io/premium", { taskId: "t1" });
+```
+
+`reconcileFromGateway(client)` reads real on-chain settlement from Gateway to
+feed the reconciliation screen. Full walkthrough, contract addresses and the
+EIP-3009 / `GatewayWalletBatched` details: **[ARC.md](ARC.md)**.
+
+> Arc chain ids: testnet **5042002**, mainnet **5042**. Set `ARC_NETWORK=mainnet`
+> (and `ARC_MAINNET_RPC_URL`) to switch.
+
 ---
 
 ## 5. Dashboard Screens & Features
@@ -264,10 +287,12 @@ real, but the payment will not settle.
 ## 8. Test Suite & Validation
 
 ```bash
-npm test              # unit tests (engines, SDK, signer, policy template, API-key crypto, slugs)
+npm test              # unit tests (engines, SDK, signer, guardGateway, policy, API-key crypto)
 npm run test:e2e      # full pipeline against a running instance: signup -> agent -> key
                       #   -> a simulated-wallet agent makes ~30 signed paid calls
                       #   -> ledger / quality / reconciliation asserted end-to-end (22 checks)
+npm run new-wallet    # generate a throwaway Arc wallet for testing the real signer
+npm run reconcile:arc # pull on-chain settlement from Circle Gateway into reconciliation
 npx tsc --noEmit      # type-check
 npm run build         # production build (also builds the SDK)
 npm run db:migrate    # apply pending migrations (needs DATABASE_URL / .env)

@@ -1,9 +1,10 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
+import { and, eq } from "drizzle-orm";
 import { db } from "./index";
 import { agent as agentTable, authorization as authTable } from "./schema";
 import { AuthorizationRecordSchema } from "@/lib/contracts";
-import { and, eq } from "drizzle-orm";
+import { ARC } from "@/lib/arc";
 
 /**
  * Writes SDK-submitted authorization records into the ledger for one agent.
@@ -84,7 +85,7 @@ export async function sendTestEvent(userId: string, slug: string): Promise<void>
     decision: "allow",
     ruleHit: null,
     nonce: randomUUID().replace(/-/g, "").slice(0, 32),
-    chainId: 5042,
+    chainId: ARC.chainId,
     httpStatus: 200,
     latencyMs: 128,
     bodyBytes: 512,

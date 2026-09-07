@@ -41,7 +41,7 @@ const server = createServer(async (req, res) => {
       "x-pay-amount": String(route.amount),
       "x-pay-currency": "USDC",
       "x-pay-nonce": randomUUID(),
-      "x-pay-chain-id": "5042",
+      "x-pay-chain-id": "5042002",
     });
     return void res.end(JSON.stringify({ error: "payment required", payTo: route.payTo, amount: route.amount }));
   }

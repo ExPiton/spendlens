@@ -19,9 +19,11 @@ const TABS = [
 export function DashboardNav({
   userName,
   userEmail,
+  arcLabel,
 }: {
   userName: string;
   userEmail: string;
+  arcLabel: string;
 }) {
   const pathname = usePathname();
   const initial = (userName || userEmail || "?").charAt(0).toUpperCase();
@@ -40,7 +42,7 @@ export function DashboardNav({
           <div className="hidden h-5 w-px bg-border md:block" />
           <div className="hidden items-center gap-2 rounded-xs border border-signal/20 bg-signal/10 px-2 py-0.5 text-xs text-signal md:flex">
             <span className="h-1.5 w-1.5 rounded-full bg-signal animate-pulse" />
-            <span className="font-mono font-medium">Arc Testnet (5042)</span>
+            <span className="font-mono font-medium">{arcLabel}</span>
           </div>
         </div>
 

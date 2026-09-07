@@ -8,5 +8,10 @@
     "noEmit": false,
     "tsBuildInfoFile": null
   },
-  "include": ["src/sdk/**/*.ts", "src/lib/contracts/**/*.ts", "src/lib/engine/**/*.ts"]
+  "include": [
+    "src/sdk/**/*.ts",
+    "src/lib/contracts/**/*.ts",
+    "src/lib/engine/**/*.ts",
+    "src/lib/arc.ts"
+  ]
 }

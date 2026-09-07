@@ -12,7 +12,27 @@ export interface AgentRecord {
   slug: string;
   label: string;
   status: "active" | "paused";
+  walletAddress: string | null;
   createdAt: string;
+}
+
+function toRecord(r: typeof agentTable.$inferSelect): AgentRecord {
+  return {
+    id: r.id,
+    slug: r.slug,
+    label: r.label,
+    status: r.status === "paused" ? "paused" : "active",
+    walletAddress: r.walletAddress ?? null,
+    createdAt: r.createdAt.toISOString(),
+  };
+}
+
+const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
+export function normalizeAddress(input: string | null | undefined): string | null {
+  const v = (input ?? "").trim();
+  if (!v) return null;
+  if (!ADDRESS_RE.test(v)) throw new Error("Wallet address must be 0x + 40 hex chars.");
+  return v.toLowerCase();
 }
 
 export async function listAgentRecords(userId: string): Promise<AgentRecord[]> {
@@ -21,13 +41,7 @@ export async function listAgentRecords(userId: string): Promise<AgentRecord[]> {
     .from(agentTable)
     .where(eq(agentTable.userId, userId))
     .orderBy(asc(agentTable.createdAt));
-  return rows.map((r) => ({
-    id: r.id,
-    slug: r.slug,
-    label: r.label,
-    status: r.status === "paused" ? "paused" : "active",
-    createdAt: r.createdAt.toISOString(),
-  }));
+  return rows.map(toRecord);
 }
 
 export async function getAgentRecordBySlug(
@@ -39,20 +53,13 @@ export async function getAgentRecordBySlug(
     .from(agentTable)
     .where(and(eq(agentTable.userId, userId), eq(agentTable.slug, slug)))
     .limit(1);
-  if (!r) return null;
-  return {
-    id: r.id,
-    slug: r.slug,
-    label: r.label,
-    status: r.status === "paused" ? "paused" : "active",
-    createdAt: r.createdAt.toISOString(),
-  };
+  return r ? toRecord(r) : null;
 }
 
 /** Creates an agent and seeds its default policy in one transaction. */
 export async function createAgent(
   userId: string,
-  input: { slug: string; label: string },
+  input: { slug: string; label: string; walletAddress?: string | null },
 ): Promise<AgentRecord> {
   const slug = normalizeSlug(input.slug);
   if (!SLUG_RE.test(slug)) {
@@ -61,6 +68,7 @@ export async function createAgent(
     );
   }
   const label = input.label.trim() || slug;
+  const walletAddress = normalizeAddress(input.walletAddress);
 
   const [dupe] = await db
     .select({ id: agentTable.id })
@@ -75,7 +83,7 @@ export async function createAgent(
   return db.transaction(async (tx) => {
     const [row] = await tx
       .insert(agentTable)
-      .values({ userId, slug, label })
+      .values({ userId, slug, label, walletAddress })
       .returning();
     await tx.insert(policyTable).values({
       agentId: row.id,
@@ -85,14 +93,19 @@ export async function createAgent(
       version: 1,
       updatedAt: new Date(),
     });
-    return {
-      id: row.id,
-      slug: row.slug,
-      label: row.label,
-      status: "active" as const,
-      createdAt: row.createdAt.toISOString(),
-    };
+    return toRecord(row);
   });
+}
+
+export async function setAgentWallet(
+  userId: string,
+  agentId: string,
+  address: string | null,
+): Promise<void> {
+  await db
+    .update(agentTable)
+    .set({ walletAddress: normalizeAddress(address), updatedAt: new Date() })
+    .where(and(eq(agentTable.id, agentId), eq(agentTable.userId, userId)));
 }
 
 export async function setAgentStatus(

@@ -103,6 +103,9 @@ export const agent = pgTable(
     label: text().notNull(),
     // "active" | "paused" — the dashboard kill switch flips this.
     status: text().notNull().default("active"),
+    /** The agent's Arc wallet address (EOA that funds Nanopayments via Circle
+     *  Gateway). Public; used to reconcile against on-chain settlement. */
+    walletAddress: text(),
     createdAt: createdAt(),
     updatedAt: timestamp({ withTimezone: true, mode: "date" }).notNull().defaultNow(),
   },
