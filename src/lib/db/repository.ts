@@ -490,12 +490,86 @@ export async function recomputeReconciliation(userId: string): Promise<number> {
         settlementId: status === "ok" ? (prior?.settlementId ?? null) : null,
       })
       .onConflictDoUpdate({
-        target: [reconTable.userId, reconTable.counterparty, reconTable.periodStart],
+        target: [reconTable.userId, reconTable.counterparty],
         set: {
           periodEnd: start < end ? end : start,
           ledgerAmountMicroUsdc: ledgerAmount,
           deltaMicroUsdc,
           status,
+        },
+      });
+    n++;
+  }
+  return n;
+}
+
+export interface SettlementEntry {
+  counterparty: string;
+  chainAmountMicroUsdc: number;
+  settlementId?: string | null;
+}
+
+/**
+ * Feeds real (or exported) on-chain settlement totals into the reconciliation
+ * table for the current period, then re-classifies against the local ledger.
+ * This is the seam for a Circle Gateway indexer — until one is wired up you
+ * can POST settlement rows here (CSV export, a cron job, a webhook).
+ */
+export async function importSettlements(
+  userId: string,
+  entries: SettlementEntry[],
+): Promise<number> {
+  if (entries.length === 0) return 0;
+  const [rows, period] = await Promise.all([
+    scanRows(userId),
+    getLedgerPeriod(userId),
+  ]);
+  const start = new Date(period.start);
+  const end = new Date(period.end);
+
+  const ledgerByCp = new Map<string, number>();
+  for (const r of rows) {
+    if (r.decision !== "allow") continue;
+    const ts = new Date(r.ts);
+    if (ts < start || ts >= end) continue;
+    ledgerByCp.set(
+      r.counterparty,
+      (ledgerByCp.get(r.counterparty) ?? 0) + r.amountMicroUsdc,
+    );
+  }
+
+  let n = 0;
+  for (const e of entries) {
+    const ledgerAmount = ledgerByCp.get(e.counterparty) ?? 0;
+    const chainAmount = Math.round(e.chainAmountMicroUsdc);
+    const { deltaMicroUsdc, status } = classifyReconciliation(
+      chainAmount,
+      ledgerAmount,
+      TOLERANCE_MICRO_USDC,
+    );
+    await db
+      .insert(reconTable)
+      .values({
+        userId,
+        counterparty: e.counterparty,
+        periodStart: start,
+        periodEnd: end,
+        chainAmountMicroUsdc: chainAmount,
+        ledgerAmountMicroUsdc: ledgerAmount,
+        deltaMicroUsdc,
+        toleranceMicroUsdc: TOLERANCE_MICRO_USDC,
+        status,
+        settlementId: e.settlementId ?? null,
+      })
+      .onConflictDoUpdate({
+        target: [reconTable.userId, reconTable.counterparty],
+        set: {
+          periodEnd: end,
+          chainAmountMicroUsdc: chainAmount,
+          ledgerAmountMicroUsdc: ledgerAmount,
+          deltaMicroUsdc,
+          status,
+          settlementId: e.settlementId ?? null,
         },
       });
     n++;

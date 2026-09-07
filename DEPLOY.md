@@ -115,28 +115,49 @@ gönderilir.
 ## 7. Bir agent'ı SDK ile bağlamak
 
 1. Panelde **New agent** → bir id ver (örn. `research-crawler-01`)
-2. Agent sayfasında **Create key** → çıkan `sl_...` anahtarını bir yere kaydet
-   (bir daha gösterilmez)
-3. Agent kodunda:
+2. Agent sayfasında **Create key** → çıkan `sl_...` anahtarını kaydet (bir daha
+   gösterilmez). Aynı sayfadaki **Send test event** butonu, hiç kod yazmadan
+   ledger'ın tepki verdiğini görmeni sağlar.
+3. Agent projesinde SDK'yı kur (uygulama servis ediyor):
+
+```bash
+npm install https://spendlens.ornek.com/downloads/spendlens-sdk.tgz
+# ya da tek dosya: curl -O https://spendlens.ornek.com/downloads/spendlens-sdk.mjs
+```
+
+4. Agent'ın ortam değişkenleri:
+
+```bash
+SPENDLENS_URL=https://spendlens.ornek.com
+SPENDLENS_API_KEY=sl_...
+```
+
+5. Agent kodunda:
 
 ```ts
-import { guard } from "@spendlens/sdk";
+import { guard, createLocalSigner } from "@spendlens/sdk";
 
 const pay = guard({
   agentId: "research-crawler-01",
-  apiKey: process.env.SPENDLENS_API_KEY,        // az önce oluşturduğun sl_... anahtarı
-  sink: "https://spendlens.ornek.com/api/authorizations",
-  policy: "./policies/research-crawler-01.yaml", // ya da bir YAML string
+  // apiKey + sink verilmezse SPENDLENS_API_KEY / SPENDLENS_URL'den okunur
+  // policy: yamlString,                                   // opsiyonel; varsayılan geniş
+  // signer: createLocalSigner(process.env.AGENT_PRIVATE_KEY), // gerçek ödeme için
 });
 
-const res = await pay.fetch("https://api.saglayici.io/v1/data", {
-  taskId: "task-001",
-});
+const res = await pay.fetch("https://api.saglayici.io/v1/data", { taskId: "task-001" });
 ```
 
-Kararlar (allow / block / hold) ve telemetri asenkron olarak panele akar.
-Agent'ı acil durumda panelden **Halt agent (kill switch)** ile durdurabilirsin;
-bu durumda ingest `423` döner.
+`pay.fetch` yalnızca HTTP **402** ödeme talebi gelince devreye girer; diğer her
+istek dokunulmadan geçer. `signer` vermezsen sahte imza kullanılır (log'a
+uyarı yazar) — policy, telemetri ve kalite analizi gerçek çalışır ama ödeme
+zincirde gerçekleşmez.
+
+Kararlar ve telemetri asenkron olarak panele akar. Agent'ı acil durumda
+panelden **Halt agent (kill switch)** ile durdurabilirsin; bu durumda ingest
+`423` döner.
+
+> Tüm döngüyü 30 saniyede görmek için repo kökünde:
+> `SPENDLENS_URL=... SPENDLENS_API_KEY=sl_... SPENDLENS_AGENT_ID=... npm run example`
 
 ---
 

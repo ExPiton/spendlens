@@ -15,6 +15,13 @@
       "when": 1788732391737,
       "tag": "0001_striped_millenium_guard",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1788744222697,
+      "tag": "0002_romantic_shape",
+      "breakpoints": true
     }
   ]
 }

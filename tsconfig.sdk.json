@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "incremental": false,
+    "composite": false,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "noEmit": false,
+    "tsBuildInfoFile": null
+  },
+  "include": ["src/sdk/**/*.ts", "src/lib/contracts/**/*.ts", "src/lib/engine/**/*.ts"]
+}

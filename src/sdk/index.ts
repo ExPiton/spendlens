@@ -1,4 +1,5 @@
 export * from "./guard";
+export * from "./signer";
 export * from "./policy-engine";
 export * from "./challenge";
 export * from "./queue";

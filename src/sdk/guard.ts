@@ -16,16 +16,84 @@ export type SignerFn = (challenge: PaymentChallenge) => Promise<PaymentAuthoriza
 
 export interface GuardOptions {
   agentId: string;
-  policy: string | PolicyConfig; // File path / YAML string or preloaded PolicyConfig
+  /**
+   * The agent's policy — a YAML string, a preloaded `PolicyConfig`, or omitted
+   * for a permissive "record everything, block nothing" default (fine to start
+   * with; tighten from the Spendlens dashboard).
+   */
+  policy?: string | PolicyConfig;
+  /**
+   * Where telemetry goes. A URL string posts batches to a hosted Spendlens
+   * ingest endpoint. Defaults to `SPENDLENS_URL` from the environment
+   * (`/api/authorizations` is appended if missing).
+   */
   sink?: LedgerSink;
-  /** Bearer token for a hosted Spendlens ingest endpoint. Sent as
-   *  `Authorization: Bearer <apiKey>` with every telemetry POST. Ignored when
-   *  `sink` is not a URL string. */
+  /**
+   * Bearer token for the hosted ingest endpoint, sent as
+   * `Authorization: Bearer <apiKey>`. Defaults to `SPENDLENS_API_KEY` from the
+   * environment. Ignored when `sink` is not a URL string.
+   */
   apiKey?: string;
+  /**
+   * Produces the payment authorization once a 402 is allowed. Without one, a
+   * clearly-marked mock signature is used (telemetry works, the payment will
+   * not actually settle). See `createLocalSigner`.
+   */
   signer?: SignerFn;
   fetchFn?: typeof fetch;
   escalationHandler?: (challenge: PaymentChallenge, ruleHit: string | null) => Promise<boolean>;
 }
+
+/** Permissive default: every counterparty allowed, generous limits, no holds.
+ *  You still get the full ledger + quality analysis. */
+export const PERMISSIVE_POLICY: PolicyConfig = {
+  version: 1,
+  agent: "default",
+  budgets: [
+    { scope: "task", limitUsdc: 1000 },
+    { scope: "hour", limitUsdc: 1000 },
+    { scope: "day", limitUsdc: 10000 },
+  ],
+  perCall: { maxUsdc: 1000, maxCallsPerMinute: 100000 },
+  counterparties: {
+    mode: "denylist",
+    allow: [],
+    deny: [],
+    firstSeen: { action: "alert", autoAllowBelowUsdc: 1000 },
+  },
+  anomaly: {
+    burnRate: { baseline: "ewma", halflifeMinutes: 15, zThreshold: 8, action: "alert" },
+    newCounterpartyRate: { maxPerHour: 100000, action: "alert" },
+  },
+  quality: {
+    failureStatusCodes: [402, 429, 500, 502, 503, 504],
+    emptyBodyIsFailure: true,
+    jsonSchema: null,
+    maxLatencyMs: 10000,
+  },
+  escalation: {
+    webhook: "https://example.com/spendlens-escalation",
+    timeoutSeconds: 30,
+    onTimeout: "block",
+  },
+};
+
+function envValue(name: string): string | undefined {
+  return typeof process !== "undefined" && process.env
+    ? process.env[name]
+    : undefined;
+}
+
+function resolveSink(explicit: LedgerSink | undefined): LedgerSink | undefined {
+  if (explicit) return explicit;
+  const url = envValue("SPENDLENS_URL");
+  if (!url) return undefined;
+  return /\/api\/authorizations\/?$/.test(url)
+    ? url
+    : url.replace(/\/$/, "") + "/api/authorizations";
+}
+
+let warnedMockSigner = false;
 
 export interface GuardedRequestInit extends RequestInit {
   taskId?: string;
@@ -67,7 +135,9 @@ export class SpendlensGuard {
     this.escalationHandler = options.escalationHandler;
 
     let config: PolicyConfig;
-    if (typeof options.policy === "string") {
+    if (options.policy === undefined) {
+      config = PERMISSIVE_POLICY;
+    } else if (typeof options.policy === "string") {
       try {
         const parsed = load(options.policy);
         const validated = PolicyFileSchema.parse(parsed);
@@ -81,11 +151,11 @@ export class SpendlensGuard {
 
     this.policyEngine = new PolicyEngine(config);
 
-    if (options.sink) {
-      this.queue = new AsyncLedgerQueue(options.sink, {
-        headers: options.apiKey
-          ? { Authorization: `Bearer ${options.apiKey}` }
-          : undefined,
+    const sink = resolveSink(options.sink);
+    const apiKey = options.apiKey ?? envValue("SPENDLENS_API_KEY");
+    if (sink) {
+      this.queue = new AsyncLedgerQueue(sink, {
+        headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined,
       });
     }
   }
@@ -227,13 +297,23 @@ export class SpendlensGuard {
     }
 
     // Step 5: Sign authorization (Non-custodial: agent executes signing)
-    let authorization: PaymentAuthorization = {
-      paymentHeader: `Bearer mock_sig_${Math.random().toString(36).slice(2, 10)}`,
-      nonce: challenge.nonce || `nonce_${Date.now()}`,
-    };
-
+    let authorization: PaymentAuthorization;
     if (this.signer) {
       authorization = await this.signer(challenge);
+    } else {
+      if (!warnedMockSigner) {
+        warnedMockSigner = true;
+        console.warn(
+          "[spendlens] no `signer` provided — using a MOCK payment signature. " +
+            "Policy checks, telemetry and quality analysis work, but the payment " +
+            "will not actually settle. Pass `signer: createLocalSigner(privateKey)` " +
+            "or your own signer for real payments.",
+        );
+      }
+      authorization = {
+        paymentHeader: `Bearer mock_sig_${Math.random().toString(36).slice(2, 10)}`,
+        nonce: challenge.nonce || `nonce_${Date.now()}`,
+      };
     }
 
     // Step 6: Send request with payment authorization header

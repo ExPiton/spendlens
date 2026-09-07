@@ -11,6 +11,7 @@ import {
 } from "@/lib/db/agents";
 import { createApiKey, revokeApiKey } from "@/lib/db/api-keys";
 import { upsertPolicy } from "@/lib/db/policy";
+import { sendTestEvent } from "@/lib/db/ingest";
 import { seedDemoData, clearTenantData } from "@/lib/db/seed-demo";
 
 export interface ActionState {
@@ -88,6 +89,15 @@ export async function revokeApiKeyAction(formData: FormData): Promise<void> {
   const { user } = await requireVerifiedUser();
   await revokeApiKey(user.id, String(formData.get("keyId") ?? ""));
   revalidatePath("/dashboard/agents/[agentId]", "page");
+}
+
+export async function sendTestEventAction(formData: FormData): Promise<void> {
+  const { user } = await requireVerifiedUser();
+  const slug = String(formData.get("slug") ?? "");
+  await sendTestEvent(user.id, slug);
+  revalidatePath("/dashboard/agents/[agentId]", "page");
+  revalidatePath("/dashboard/ledger");
+  revalidatePath("/dashboard");
 }
 
 // ── policy ──────────────────────────────────────────────────────────────────

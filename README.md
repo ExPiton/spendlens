@@ -106,7 +106,29 @@ populate every screen, or **New agent** to start clean.
 > One-command production run instead: `docker compose up -d --build` — see
 > [DEPLOY.md](DEPLOY.md).
 
-### Step 3: Write a Policy File (`policies/research-crawler-01.yaml`)
+### Step 3: See the whole loop in 30 seconds
+
+```bash
+npm run example
+```
+
+Starts a throwaway "paid API" that speaks HTTP 402 and runs an example agent
+against it through the SDK — you'll see `allow / ok`, `allow / empty` (wasted
+spend), and a `block` on `per_call.max_usdc`. To stream those into your
+dashboard too, create an agent + key and:
+
+```bash
+SPENDLENS_URL=http://localhost:3000 \
+SPENDLENS_API_KEY=sl_... \
+SPENDLENS_AGENT_ID=my-agent \
+npm run example
+```
+
+### Step 4: Write a Policy File (`policies/research-crawler-01.yaml`)
+
+> Optional — `guard()` uses a permissive "record everything, block nothing"
+> policy by default, which you tighten from the **Policies** tab. A YAML file
+> looks like:
 
 ```yaml
 version: 1
@@ -155,33 +177,39 @@ escalation:
   on_timeout: block
 ```
 
-### Step 4: One-Line Integration in Agent Code
+### Step 5: Wire a real agent
 
-In the dashboard, open your agent → **Create key**, copy the `sl_…` value once,
-and pass it as `apiKey`. Telemetry is sent to the ingest endpoint with an
-`Authorization: Bearer <apiKey>` header and lands in *your* account only.
+Install the SDK — the running app serves it (dashboard → your agent → **SDK
+connection** shows the exact line):
+
+```bash
+npm install https://your-spendlens.example.com/downloads/spendlens-sdk.tgz
+# or vendor one file: curl -O https://your-spendlens.example.com/downloads/spendlens-sdk.mjs
+```
+
+Create an agent + key in the dashboard, then in the agent's environment set
+`SPENDLENS_URL` and `SPENDLENS_API_KEY` and:
 
 ```typescript
-import { guard } from "@spendlens/sdk";
+import { guard, createLocalSigner } from "@spendlens/sdk";
 
-// Wrap the agent's HTTP client
 const pay = guard({
   agentId: "research-crawler-01",
-  apiKey: process.env.SPENDLENS_API_KEY,            // the sl_… key from the dashboard
-  sink: "http://localhost:3000/api/authorizations", // your Spendlens URL + /api/authorizations
-  policy: "./policies/research-crawler-01.yaml",
+  // apiKey + sink are read from SPENDLENS_API_KEY / SPENDLENS_URL if omitted
+  // policy: yamlString,                                   // optional; permissive default
+  // signer: createLocalSigner(process.env.AGENT_PRIVATE_KEY), // for real settlement
 });
 
-// Use pay.fetch instead of the standard fetch:
-const res = await pay.fetch("https://api.example.io/v1/data", {
-  taskId: "task-market-001",
-});
-
+// Use pay.fetch instead of fetch anywhere the agent calls a paid API:
+const res = await pay.fetch("https://api.example.io/v1/data", { taskId: "task-1" });
 const data = await res.json();
 ```
 
-`http://localhost:3000` is the marketing page; `http://localhost:3000/dashboard`
-is the (authenticated) dashboard.
+`pay.fetch` only engages on an HTTP **402** payment challenge (x402 headers,
+`WWW-Authenticate: Nanopayment`, or a JSON body with `payTo` + `amount`);
+everything else passes straight through untouched. Without a `signer` it uses a
+clearly-logged mock signature — policy, telemetry and quality analysis are
+real, but the payment will not settle.
 
 ---
 
@@ -223,6 +251,11 @@ is the (authenticated) dashboard.
 - **API keys** are per-agent bearer tokens (`sl_` + 40 hex). Only a SHA-256
   hash is stored; the plaintext is shown once. A halted agent rejects ingest
   with `423`.
+- **The SDK is served by the app**: `npm run build:sdk` builds `src/sdk` into
+  `public/downloads/` as an installable tarball (`spendlens-sdk.tgz`) and a
+  single inlined file (`spendlens-sdk.mjs`). `npm run build` / `npm run dev`
+  run it automatically. Reconciliation can be fed real settlement totals via
+  `POST /api/reconciliation/settlements` (session or API key).
 - The marketing page's live preview still renders the deterministic sample
   dataset in `src/lib/mock/` — it is not connected to the database.
 

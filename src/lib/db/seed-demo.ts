@@ -101,7 +101,7 @@ export async function seedDemoData(userId: string): Promise<void> {
     .insert(reconTable)
     .values(recon)
     .onConflictDoNothing({
-      target: [reconTable.userId, reconTable.counterparty, reconTable.periodStart],
+      target: [reconTable.userId, reconTable.counterparty],
     });
 }
 

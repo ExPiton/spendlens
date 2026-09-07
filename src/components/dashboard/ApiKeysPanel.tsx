@@ -4,6 +4,7 @@ import { useActionState, useState } from "react";
 import {
   createApiKeyAction,
   revokeApiKeyAction,
+  sendTestEventAction,
   type ActionState,
 } from "@/app/dashboard/actions";
 import type { ApiKeyView } from "@/lib/db/api-keys";
@@ -16,29 +17,34 @@ export function ApiKeysPanel({
   slug,
   keys,
   ingestUrl,
+  appUrl,
 }: {
   agentId: string;
   slug: string;
   keys: ApiKeyView[];
   ingestUrl: string;
+  appUrl: string;
 }) {
   const [state, formAction, pending] = useActionState(createApiKeyAction, initial);
   const [copied, setCopied] = useState(false);
 
   const active = keys.filter((k) => !k.revokedAt);
+  const base = appUrl.replace(/\/$/, "");
 
+  const installCmd = `npm install ${base}/downloads/spendlens-sdk.tgz`;
   const snippet = `import { guard } from "@spendlens/sdk";
 
 const pay = guard({
   agentId: "${slug}",
+  // reads SPENDLENS_API_KEY + SPENDLENS_URL from the environment:
   apiKey: process.env.SPENDLENS_API_KEY,
-  sink: "${ingestUrl}",
-  policy: spendlensPolicyYaml, // your agent's policy
+  sink: "${base}",
+  // policy: yamlString,   // optional — permissive by default, tighten on the Policies tab
+  // signer: createLocalSigner(process.env.AGENT_PRIVATE_KEY),  // for real payments
 });
 
-const res = await pay.fetch("https://api.example.io/v1/data", {
-  taskId: "task-001",
-});`;
+// use pay.fetch wherever the agent would call a paid API:
+const res = await pay.fetch("https://api.example.io/v1/data", { taskId: "task-001" });`;
 
   return (
     <div className="rounded-md border border-border bg-surface p-6">
@@ -51,15 +57,45 @@ const res = await pay.fetch("https://api.example.io/v1/data", {
       </div>
 
       <div className="mt-4 space-y-2">
-        <div className="flex items-center gap-2 text-xs">
-          <span className="text-muted">Ingest URL</span>
-          <code className="rounded-xs bg-surface-2 px-2 py-1 font-mono text-fg">
-            {ingestUrl}
-          </code>
+        <div className="text-[11px] font-medium uppercase tracking-wide text-muted">
+          1. Install
+        </div>
+        <pre className="overflow-x-auto rounded-xs bg-surface-2 p-3 font-mono text-[11px] text-fg">
+          {installCmd}
+        </pre>
+        <p className="text-[11px] text-muted">
+          Or grab one file:{" "}
+          <a
+            href={`${base}/downloads/spendlens-sdk.mjs`}
+            className="underline hover:text-fg"
+          >
+            spendlens-sdk.mjs
+          </a>
+          . Set <code className="font-mono">SPENDLENS_URL={base}</code> and{" "}
+          <code className="font-mono">SPENDLENS_API_KEY=</code> your key.
+        </p>
+        <div className="mt-2 text-[11px] font-medium uppercase tracking-wide text-muted">
+          2. Wrap the agent&apos;s fetch
         </div>
         <pre className="overflow-x-auto rounded-xs bg-surface-2 p-3 font-mono text-[11px] leading-relaxed text-muted">
           {snippet}
         </pre>
+        <div className="flex flex-wrap items-center gap-2 pt-1">
+          <span className="text-[11px] text-muted">Ingest URL:</span>
+          <code className="rounded-xs bg-surface-2 px-2 py-1 font-mono text-[11px] text-fg">
+            {ingestUrl}
+          </code>
+          <form action={sendTestEventAction} className="ml-auto">
+            <input type="hidden" name="slug" value={slug} />
+            <button
+              type="submit"
+              className="rounded-xs border border-border px-2.5 py-1 text-xs text-fg transition-slens hover:bg-surface-2"
+              title="Writes one sample authorization so you can see the ledger react"
+            >
+              Send test event
+            </button>
+          </form>
+        </div>
       </div>
 
       {/* freshly-created secret */}

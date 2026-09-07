@@ -1,7 +1,9 @@
 import "server-only";
+import { randomUUID } from "node:crypto";
 import { db } from "./index";
-import { authorization as authTable } from "./schema";
+import { agent as agentTable, authorization as authTable } from "./schema";
 import { AuthorizationRecordSchema } from "@/lib/contracts";
+import { and, eq } from "drizzle-orm";
 
 /**
  * Writes SDK-submitted authorization records into the ledger for one agent.
@@ -53,4 +55,42 @@ export async function insertAuthorizations(
     ingested: inserted.length,
     skipped: values.length - inserted.length,
   };
+}
+
+/**
+ * Writes one synthetic "allow / ok" authorization for an agent the user owns —
+ * powers the dashboard's "Send test event" button so a new user can see the
+ * ledger react without wiring the SDK first.
+ */
+export async function sendTestEvent(userId: string, slug: string): Promise<void> {
+  const [agent] = await db
+    .select({ id: agentTable.id })
+    .from(agentTable)
+    .where(and(eq(agentTable.userId, userId), eq(agentTable.slug, slug)))
+    .limit(1);
+  if (!agent) throw new Error("Agent not found");
+
+  const now = new Date();
+  await db.insert(authTable).values({
+    externalId: `test_${randomUUID()}`,
+    userId,
+    agentId: agent.id,
+    agentSlug: slug,
+    ts: now,
+    taskId: "task-test-event",
+    counterparty: "api.example.io",
+    resource: "https://api.example.io/v1/data",
+    amountMicroUsdc: 3000,
+    decision: "allow",
+    ruleHit: null,
+    nonce: randomUUID().replace(/-/g, "").slice(0, 32),
+    chainId: 5042,
+    httpStatus: 200,
+    latencyMs: 128,
+    bodyBytes: 512,
+    bodySha256: "test-event-" + randomUUID().replace(/-/g, ""),
+    quality: "ok",
+    settlementId: null,
+    createdAt: now,
+  });
 }

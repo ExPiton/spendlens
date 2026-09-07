@@ -217,11 +217,9 @@ export const reconciliation = pgTable(
     createdAt: createdAt(),
   },
   (t) => [
-    uniqueIndex("reconciliation_user_cp_period_idx").on(
-      t.userId,
-      t.counterparty,
-      t.periodStart,
-    ),
+    // One row per counterparty per tenant — the screen shows current chain-vs-
+    // ledger state, not a per-period history. periodStart/End are descriptive.
+    uniqueIndex("reconciliation_user_cp_idx").on(t.userId, t.counterparty),
     index("reconciliation_user_id_idx").on(t.userId),
   ],
 );

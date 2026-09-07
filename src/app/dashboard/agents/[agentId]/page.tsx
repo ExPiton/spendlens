@@ -117,6 +117,7 @@ export default async function AgentDetailPage(props: AgentDetailPageProps) {
         slug={agent.agentId}
         keys={keys}
         ingestUrl={ingestUrl}
+        appUrl={appUrl}
       />
 
       {/* Policy snippet */}
