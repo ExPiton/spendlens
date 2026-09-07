@@ -264,12 +264,18 @@ real, but the payment will not settle.
 ## 8. Test Suite & Validation
 
 ```bash
-npm test              # unit tests (engines, SDK, policy template, API-key crypto, slugs)
+npm test              # unit tests (engines, SDK, signer, policy template, API-key crypto, slugs)
+npm run test:e2e      # full pipeline against a running instance: signup -> agent -> key
+                      #   -> a simulated-wallet agent makes ~30 signed paid calls
+                      #   -> ledger / quality / reconciliation asserted end-to-end (22 checks)
 npx tsc --noEmit      # type-check
-npm run build         # production build
+npm run build         # production build (also builds the SDK)
 npm run db:migrate    # apply pending migrations (needs DATABASE_URL / .env)
 npm run db:studio     # drizzle-kit studio
 ```
+
+Agents and keys can be managed over REST as well as the UI (session-scoped):
+`GET`/`POST /api/agents`, `GET`/`POST /api/agents/<slug>/keys`.
 
 ---
 
