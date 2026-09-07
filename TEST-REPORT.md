@@ -95,10 +95,22 @@ proposal, caught.
   builder stage and runs migrations on boot.
 - `npm run example` — the same loop as a one-command demo.
 
-## Honest gaps (unchanged from before)
+## Arc integration (added after this run — see ARC.md)
 
-- No live Arc settlement source — reconciliation is fed via the
-  `/api/reconciliation/settlements` seam (CSV/cron/webhook).
-- `createLocalSigner` is a generic signer; a specific merchant may need a
-  custom `signer`.
+- **Real Nanopayments path**: `guardGateway()` wraps
+  `@circle-fin/x402-batching`'s `GatewayClient`, hooking the policy engine into
+  its `onBeforePaymentCreation` lifecycle hook. Circle's SDK does the EIP-3009 /
+  `GatewayWalletBatched` EIP-712 signing; the key never leaves it. Covered by 4
+  unit tests (allow / block / denylist / quality).
+- **Real Arc settlement source**: `reconcileFromGateway()` reads
+  `GatewayClient.searchTransfers()` and feeds `/api/reconciliation/settlements`
+  (`npm run reconcile:arc`). 1 unit test.
+- Chain id fixed: testnet `5042002` (was wrongly `5042`, which is mainnet).
+
+## Remaining gaps
+
+- `createLocalSigner` is a generic ECDSA signer for non-Circle x402 servers; the
+  Circle path uses `guardGateway` + `@circle-fin/x402-batching`.
+- A true on-chain run needs a Circle faucet login and a live Nanopayments seller
+  (`examples/x402-server.mjs` is a plain-header mock, not `GatewayWalletBatched`).
 - SDK is served from the app (`/downloads/spendlens-sdk.tgz`), not published to npm.
