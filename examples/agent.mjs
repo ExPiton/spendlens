@@ -1,13 +1,25 @@
 /**
  * A minimal agent that makes paid calls through Spendlens. Run via
- * `npm run example` (which also starts examples/paid-api.mjs).
+ * `npm run example` (which also starts examples/x402-server.mjs).
  *
  * Set these to also stream telemetry into your dashboard:
  *   SPENDLENS_URL=https://your-spendlens.example.com
  *   SPENDLENS_API_KEY=sl_...            (dashboard -> your agent -> Create key)
  *   SPENDLENS_AGENT_ID=research-crawler-01
+ *
+ * Set AGENT_PRIVATE_KEY (see `node scripts/new-wallet.mjs`) to sign with a real
+ * key instead of the mock signature.
  */
-import { guard, PolicyBlocked } from "../public/downloads/spendlens-sdk.mjs";
+import { readFileSync } from "node:fs";
+import { guard, PolicyBlocked, createLocalSigner } from "../public/downloads/spendlens-sdk.mjs";
+
+// load .env from the repo root (best-effort)
+try {
+  for (const line of readFileSync(new URL("../.env", import.meta.url), "utf8").split("\n")) {
+    const m = /^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/.exec(line);
+    if (m && !process.env[m[1]]) process.env[m[1]] = m[2].replace(/^["']|["']$/g, "");
+  }
+} catch {}
 
 const PAID_API = process.env.PAID_API_URL ?? "http://localhost:4021";
 const HOSTED = process.env.SPENDLENS_URL && process.env.SPENDLENS_API_KEY;
@@ -40,6 +52,9 @@ escalation: { webhook: "https://example.com/x", timeout_seconds: 30, on_timeout:
 const pay = guard({
   agentId: process.env.SPENDLENS_AGENT_ID ?? "example-agent",
   policy,
+  signer: process.env.AGENT_PRIVATE_KEY
+    ? createLocalSigner(process.env.AGENT_PRIVATE_KEY)
+    : undefined,
   // Function sink prints every recorded decision; if the hosted vars are set,
   // it also forwards the batch to your dashboard.
   sink: async (records) => {

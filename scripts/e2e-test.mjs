@@ -17,8 +17,16 @@
  */
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+
+try {
+  for (const line of readFileSync(new URL("../.env", import.meta.url), "utf8").split("\n")) {
+    const m = /^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/.exec(line);
+    if (m && !process.env[m[1]]) process.env[m[1]] = m[2].replace(/^["']|["']$/g, "");
+  }
+} catch {}
 
 // Use the app's own canonical origin (APP_URL) so Better Auth's origin check
 // passes for this server-to-server client.
@@ -109,7 +117,9 @@ escalation: { webhook: "https://example.com/x", timeout_seconds: 30, on_timeout:
   const { guard, createLocalSigner, PolicyBlocked } = await import(
     path.join(dir, "..", "public", "downloads", "spendlens-sdk.mjs")
   );
-  const walletKey = randomBytes(32).toString("hex"); // "funded from a faucet"
+  // Use the funded test wallet if AGENT_PRIVATE_KEY is set (see
+  // `node scripts/new-wallet.mjs`), otherwise a fresh throwaway key.
+  const walletKey = process.env.AGENT_PRIVATE_KEY || randomBytes(32).toString("hex");
   const forwarded = [];
   const pay = guard({
     agentId: AGENT,
