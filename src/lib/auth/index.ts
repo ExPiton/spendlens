@@ -7,6 +7,15 @@ import { sendEmail } from "@/lib/email";
 
 const appUrl = process.env.APP_URL ?? "http://localhost:3000";
 
+/** The canonical origin, plus the localhost/127.0.0.1 sibling so local tooling
+ *  and the two names for loopback both pass the CSRF/origin check in dev. */
+function trustedOrigins(): string[] {
+  const set = new Set([appUrl]);
+  if (appUrl.includes("localhost")) set.add(appUrl.replace("localhost", "127.0.0.1"));
+  if (appUrl.includes("127.0.0.1")) set.add(appUrl.replace("127.0.0.1", "localhost"));
+  return [...set];
+}
+
 type SocialProviders = NonNullable<Parameters<typeof betterAuth>[0]["socialProviders"]>;
 
 /** Only register a social provider when both its env vars are present, so the
@@ -36,7 +45,7 @@ export const auth = betterAuth({
   appName: "Spendlens",
   baseURL: appUrl,
   secret: process.env.BETTER_AUTH_SECRET,
-  trustedOrigins: [appUrl],
+  trustedOrigins: trustedOrigins(),
   database: drizzleAdapter(db, {
     provider: "pg",
     schema: {
