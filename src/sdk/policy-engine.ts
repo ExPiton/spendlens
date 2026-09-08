@@ -1,3 +1,8 @@
+import {
+  existsSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import type { PolicyConfig } from "@/lib/contracts";
 import { updateBurnRateEwma, isColdStart, type EwmaState } from "@/lib/engine/anomaly";
 import type { QualityRules } from "@/lib/engine/classifyQuality";
@@ -33,13 +38,49 @@ export interface PolicyStateStore {
   recordCall(input: EvaluationInput, verdict: EvaluationVerdict): void;
 }
 
+interface SerializedPolicyState {
+  taskSpends: Record<string, number>;
+  callTimestamps: { agentId: string; ts: number; amount: number; counterparty: string }[];
+  seenCounterparties: string[];
+  firstActivity: Record<string, number>;
+  totalCalls: Record<string, number>;
+  ewmaStates: Record<string, EwmaState>;
+}
+
 export class InMemoryPolicyStateStore implements PolicyStateStore {
-  private taskSpends = new Map<string, number>();
-  private callTimestamps: { agentId: string; ts: number; amount: number; counterparty: string }[] = [];
-  private seenCounterparties = new Set<string>();
-  private firstActivityMap = new Map<string, number>();
-  private totalCallsMap = new Map<string, number>();
-  private ewmaStates = new Map<string, EwmaState>();
+  protected taskSpends = new Map<string, number>();
+  protected callTimestamps: { agentId: string; ts: number; amount: number; counterparty: string }[] = [];
+  protected seenCounterparties = new Set<string>();
+  protected firstActivityMap = new Map<string, number>();
+  protected totalCallsMap = new Map<string, number>();
+  protected ewmaStates = new Map<string, EwmaState>();
+
+  /** Snapshot for persistence. Old call timestamps (> 25h) are dropped —
+   *  nothing reads past the day-spend window. */
+  protected serialize(): SerializedPolicyState {
+    const cutoff = Date.now() - 25 * 60 * 60 * 1000;
+    return {
+      taskSpends: Object.fromEntries(this.taskSpends),
+      callTimestamps: this.callTimestamps.filter((c) => c.ts >= cutoff),
+      seenCounterparties: [...this.seenCounterparties],
+      firstActivity: Object.fromEntries(this.firstActivityMap),
+      totalCalls: Object.fromEntries(this.totalCallsMap),
+      ewmaStates: Object.fromEntries(this.ewmaStates),
+    };
+  }
+
+  protected hydrate(s: Partial<SerializedPolicyState> | null | undefined): void {
+    if (!s) return;
+    this.taskSpends = new Map(Object.entries(s.taskSpends ?? {}));
+    this.callTimestamps = s.callTimestamps ?? [];
+    this.seenCounterparties = new Set(s.seenCounterparties ?? []);
+    this.firstActivityMap = new Map(Object.entries(s.firstActivity ?? {}));
+    this.totalCallsMap = new Map(Object.entries(s.totalCalls ?? {}));
+    this.ewmaStates = new Map(Object.entries(s.ewmaStates ?? {}));
+  }
+
+  /** Hook for subclasses that persist — called after every mutation. */
+  protected onMutate(): void {}
 
   getTaskSpend(agentId: string, taskId: string): number {
     return this.taskSpends.get(`${agentId}:${taskId}`) || 0;
@@ -88,6 +129,7 @@ export class InMemoryPolicyStateStore implements PolicyStateStore {
 
   setEwmaState(agentId: string, state: EwmaState): void {
     this.ewmaStates.set(agentId, state);
+    this.onMutate();
   }
 
   recordCall(input: EvaluationInput, verdict: EvaluationVerdict): void {
@@ -112,6 +154,83 @@ export class InMemoryPolicyStateStore implements PolicyStateStore {
         counterparty: input.counterparty,
       });
     }
+    this.onMutate();
+  }
+}
+
+/**
+ * A `PolicyStateStore` that survives process restarts by mirroring its state
+ * to a JSON file. Budgets (task / hour / day rolling spend), the seen-
+ * counterparty set, and the EWMA burn-rate baseline are all restored on
+ * construction, so a long-running guarded agent that redeploys keeps counting
+ * from where it left off instead of silently resetting to zero.
+ *
+ *   import { FilePolicyStateStore, PolicyEngine } from "@spendlens/sdk";
+ *   const engine = new PolicyEngine(policy, new FilePolicyStateStore(".spendlens-state.json"));
+ *
+ * Writes are debounced (default 1s) and flushed on `process.exit` / SIGINT /
+ * SIGTERM. Single-process only — concurrent writers would clobber each other.
+ * Node-only (uses `node:fs`); a bad/missing file just starts the store empty.
+ */
+export class FilePolicyStateStore extends InMemoryPolicyStateStore {
+  private saveTimer: ReturnType<typeof setTimeout> | null = null;
+
+  constructor(
+    private readonly filePath: string,
+    private readonly debounceMs = 1000,
+  ) {
+    super();
+    this.load();
+    const flush = () => this.flush();
+    process.once("exit", flush);
+    process.once("SIGINT", () => {
+      flush();
+      process.exit(130);
+    });
+    process.once("SIGTERM", () => {
+      flush();
+      process.exit(143);
+    });
+  }
+
+  private load(): void {
+    try {
+      if (!existsSync(this.filePath)) return;
+      this.hydrate(JSON.parse(readFileSync(this.filePath, "utf8")));
+    } catch (err) {
+      console.warn(
+        `[spendlens] could not read policy state from ${this.filePath}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
+  /** Write the current snapshot now, bypassing the debounce. */
+  flush(): void {
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
+    try {
+      writeFileSync(this.filePath, JSON.stringify(this.serialize()), "utf8");
+    } catch (err) {
+      console.warn(
+        `[spendlens] could not persist policy state to ${this.filePath}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
+  protected onMutate(): void {
+    if (this.saveTimer) return;
+    this.saveTimer = setTimeout(() => {
+      this.saveTimer = null;
+      this.flush();
+    }, this.debounceMs);
+    // Don't keep the event loop alive just for a pending state write.
+    this.saveTimer.unref?.();
   }
 }
 

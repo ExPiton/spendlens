@@ -15,7 +15,7 @@ function fakeClient(opts: {
   status?: number;
   transfers?: Array<{ id: string; amount: string; toAddress: string; fromAddress: string; status: string; createdAt: string }>;
 }) {
-  let hook: ((ctx: any) => Promise<any>) | null = null;
+  let hook: ((ctx: unknown) => Promise<unknown>) | null = null;
   const c = {
     address: "0xagentwallet0000000000000000000000000000",
     onBeforePaymentCreation(h: (ctx: unknown) => Promise<unknown>) {
@@ -147,6 +147,99 @@ describe("guardGateway (Nanopayments adapter)", () => {
     await pay.fetch("https://api.example.io/empty");
     await new Promise((r) => setTimeout(r, 1200));
     assert.equal(recorded[0].quality, "empty");
+  });
+
+  describe("hold → escalation webhook", () => {
+    // allowlist mode: a counterparty that is neither allow-listed nor seen
+    // before, spending over the auto-allow floor, produces a `hold` verdict.
+    const HOLD_POLICY = `version: 1
+agent: t
+budgets: [{ scope: task, limit_usdc: 5 }, { scope: hour, limit_usdc: 50 }, { scope: day, limit_usdc: 500 }]
+per_call: { max_usdc: 1, max_calls_per_minute: 600 }
+counterparties:
+  mode: allowlist
+  allow: ["api.example.io"]
+  deny: []
+  first_seen: { action: hold, auto_allow_below_usdc: 0.001 }
+anomaly:
+  burn_rate: { baseline: ewma, halflife_minutes: 15, z_threshold: 4, action: alert }
+  new_counterparty_rate: { max_per_hour: 50, action: alert }
+quality: { failure_status_codes: [500], empty_body_is_failure: true, json_schema: null, max_latency_ms: 4000 }
+escalation: { webhook: "https://hook.test/escalate", timeout_seconds: 5, on_timeout: block }
+`;
+
+    const origFetch = globalThis.fetch;
+    const restore = () => {
+      globalThis.fetch = origFetch;
+    };
+
+    it("proceeds with the payment when the webhook approves", async () => {
+      const seen: string[] = [];
+      globalThis.fetch = (async (url: string) => {
+        seen.push(String(url));
+        return new Response(JSON.stringify({ approved: true }), { status: 200 });
+      }) as typeof fetch;
+      try {
+        const recorded: AuthorizationRecord[] = [];
+        const client = fakeClient({
+          payTo: "api.new.io",
+          amountAtomic: "5000", // 0.005 > auto_allow 0.001 → hold
+          resourceUrl: "https://api.new.io/x",
+        });
+        const pay = guardGateway(client, {
+          agentId: "t",
+          policy: HOLD_POLICY,
+          sink: async (rs) => void recorded.push(...rs),
+        });
+        const res = await pay.fetch("https://api.new.io/x");
+        assert.equal(res.status, 200);
+        await new Promise((r) => setTimeout(r, 1200));
+        assert.equal(seen[0], "https://hook.test/escalate");
+        assert.equal(recorded.at(-1)?.decision, "hold_approved");
+      } finally {
+        restore();
+      }
+    });
+
+    it("blocks (PolicyBlocked) when the webhook denies", async () => {
+      globalThis.fetch = (async () =>
+        new Response(JSON.stringify({ approved: false }), { status: 200 })) as typeof fetch;
+      try {
+        const recorded: AuthorizationRecord[] = [];
+        const client = fakeClient({
+          payTo: "api.new.io",
+          amountAtomic: "5000",
+          resourceUrl: "https://api.new.io/x",
+        });
+        const pay = guardGateway(client, {
+          agentId: "t",
+          policy: HOLD_POLICY,
+          sink: async (rs) => void recorded.push(...rs),
+        });
+        await assert.rejects(() => pay.fetch("https://api.new.io/x"), PolicyBlocked);
+        await new Promise((r) => setTimeout(r, 1200));
+        assert.equal(recorded.at(-1)?.decision, "hold_denied");
+      } finally {
+        restore();
+      }
+    });
+
+    it("falls back to on_timeout=block when the webhook is unreachable", async () => {
+      globalThis.fetch = (async () => {
+        throw new Error("ECONNREFUSED");
+      }) as typeof fetch;
+      try {
+        const client = fakeClient({
+          payTo: "api.new.io",
+          amountAtomic: "5000",
+          resourceUrl: "https://api.new.io/x",
+        });
+        const pay = guardGateway(client, { agentId: "t", policy: HOLD_POLICY });
+        await assert.rejects(() => pay.fetch("https://api.new.io/x"), PolicyBlocked);
+      } finally {
+        restore();
+      }
+    });
   });
 });
 

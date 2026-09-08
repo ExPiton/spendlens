@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { importSettlements } from "@/lib/db/repository";
 import { requireApiKey, requireSessionUser, isResponse } from "@/lib/auth/api";
+import { enforceRateLimit } from "@/lib/rate-limit";
 
 const BodySchema = z.object({
   settlements: z
@@ -31,6 +32,9 @@ export async function POST(request: NextRequest) {
   } else {
     userId = key.userId;
   }
+
+  const limited = enforceRateLimit(`settlements:${userId}`, 60);
+  if ("response" in limited) return limited.response;
 
   try {
     const parsed = BodySchema.parse(await request.json());

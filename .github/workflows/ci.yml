@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "feat/**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build app (runs build:sdk via prebuild)
+        run: npm run build
+        env:
+          # `next build` imports route modules; a throwaway value is enough for
+          # collection, and the DB is never contacted during the build.
+          BETTER_AUTH_SECRET: ci-not-a-real-secret-ci-not-a-real-secret
+          NEXT_TELEMETRY_DISABLED: "1"
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: spendlens
+          POSTGRES_PASSWORD: spendlens
+          POSTGRES_DB: spendlens
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U spendlens -d spendlens"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgres://spendlens:spendlens@localhost:5432/spendlens
+      BETTER_AUTH_SECRET: ci-not-a-real-secret-ci-not-a-real-secret
+      APP_URL: http://localhost:3000
+      NEXT_PUBLIC_APP_URL: http://localhost:3000
+      NEXT_TELEMETRY_DISABLED: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Migrate
+        run: npm run db:migrate
+
+      - name: Build
+        run: npm run build
+
+      - name: Start server
+        run: |
+          npm start &
+          npx --yes wait-on http://localhost:3000/api/health --timeout 60000
+
+      - name: End-to-end pipeline
+        run: npm run test:e2e

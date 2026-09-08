@@ -59,6 +59,52 @@ export async function insertAuthorizations(
 }
 
 /**
+ * Records the outcome of an escalated `hold` (from `POST /api/escalate`) as a
+ * ledger row, so the dashboard's blocked / held views reflect it. Returns the
+ * new row's id.
+ */
+export async function recordHoldDecision(
+  scope: { userId: string; agentId: string; agentSlug: string },
+  input: {
+    decision: "hold_approved" | "hold_denied";
+    counterparty: string;
+    resource: string;
+    amountMicroUsdc: number;
+    ruleHit: string | null;
+    taskId?: string | null;
+    nonce?: string | null;
+  },
+): Promise<string> {
+  const now = new Date();
+  const [row] = await db
+    .insert(authTable)
+    .values({
+      externalId: `hold_${randomUUID()}`,
+      userId: scope.userId,
+      agentId: scope.agentId,
+      agentSlug: scope.agentSlug,
+      ts: now,
+      taskId: input.taskId ?? "task-escalation",
+      counterparty: input.counterparty,
+      resource: input.resource,
+      amountMicroUsdc: Math.max(0, Math.round(input.amountMicroUsdc)),
+      decision: input.decision,
+      ruleHit: input.ruleHit,
+      nonce: input.nonce ?? null,
+      chainId: ARC.chainId,
+      httpStatus: null,
+      latencyMs: null,
+      bodyBytes: null,
+      bodySha256: null,
+      quality: null,
+      settlementId: null,
+      createdAt: now,
+    })
+    .returning({ id: authTable.id });
+  return row.id;
+}
+
+/**
  * Writes one synthetic "allow / ok" authorization for an agent the user owns —
  * powers the dashboard's "Send test event" button so a new user can see the
  * ledger react without wiring the SDK first.

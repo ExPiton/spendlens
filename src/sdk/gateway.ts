@@ -162,6 +162,53 @@ async function sha256Hex(text: string): Promise<string> {
 const genId = () =>
   `auth_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 
+interface EscalationConfig {
+  webhook: string;
+  timeoutSeconds: number;
+  onTimeout: "allow" | "block" | "hold" | "alert";
+}
+
+/**
+ * POSTs a `hold` challenge to the policy's escalation webhook and waits up to
+ * `timeoutSeconds` for `{ approved: boolean }`. On any failure or timeout the
+ * answer is `onTimeout === "allow"`. Spendlens's own `/api/escalate` speaks
+ * this shape.
+ */
+async function askEscalationWebhook(
+  escalation: EscalationConfig,
+  payload: {
+    agentId: string;
+    counterparty: string;
+    resource: string;
+    amountUsdc: number;
+    ruleHit: string | null;
+  },
+  apiKey?: string,
+): Promise<boolean> {
+  try {
+    const controller = new AbortController();
+    const t = setTimeout(
+      () => controller.abort(),
+      Math.max(1, escalation.timeoutSeconds) * 1000,
+    );
+    const res = await fetch(escalation.webhook, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    clearTimeout(t);
+    if (!res.ok) return escalation.onTimeout === "allow";
+    const data = (await res.json().catch(() => ({}))) as { approved?: boolean };
+    return data.approved === true;
+  } catch {
+    return escalation.onTimeout === "allow";
+  }
+}
+
 export function guardGateway(
   client: GatewayClientLike,
   options: GuardGatewayOptions,
@@ -233,9 +280,22 @@ export function guardGateway(
       return { abort: true, reason: verdict.ruleHit ?? "policy.block" };
     }
     if (verdict.decision === "hold") {
-      const approved = options.escalationHandler
-        ? await options.escalationHandler(selectedRequirements, verdict.ruleHit)
-        : false;
+      let approved = false;
+      if (options.escalationHandler) {
+        approved = await options.escalationHandler(selectedRequirements, verdict.ruleHit);
+      } else if (verdict.escalation?.webhook) {
+        approved = await askEscalationWebhook(
+          verdict.escalation,
+          {
+            agentId: options.agentId,
+            counterparty,
+            resource,
+            amountUsdc: amountMicroUsdc / 1_000_000,
+            ruleHit: verdict.ruleHit,
+          },
+          apiKey,
+        );
+      }
       if (!approved) {
         pending.blocked = true;
         record(

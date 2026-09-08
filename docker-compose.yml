@@ -45,6 +45,19 @@ services:
       SMTP_SECURE: ${SMTP_SECURE:-false}
     ports:
       - "${WEB_HOST_PORT:-3000}:3000"
+    healthcheck:
+      # Node is in the runner image; curl/wget are not.
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
 volumes:
   db-data:
