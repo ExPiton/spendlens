@@ -5,7 +5,14 @@ export * from "./policy-engine";
 export * from "./challenge";
 export * from "./queue";
 export * from "./errors";
-export { ARC, ARC_TESTNET, ARC_MAINNET, microUsdcToUsdc, usdcToMicroUsdc } from "@/lib/arc";
+export {
+  ARC,
+  ARC_TESTNET,
+  ARC_MAINNET,
+  ARC_GATEWAY_CHAIN,
+  microUsdcToUsdc,
+  usdcToMicroUsdc,
+} from "@/lib/arc";
 
 // Re-export contract schemas and types for SDK consumers
 export type {

@@ -295,6 +295,11 @@ export function guardGateway(
       return res as PayResult<T>;
     }
 
+    // The payment may have SETTLED even when pay() then threw — e.g. the SDK
+    // couldn't JSON-parse an empty 200 body. That's the "silent quality
+    // degradation" case: paid, got nothing usable.
+    const settledButUnparseable =
+      Boolean(error) && error instanceof SyntaxError;
     const bodyText =
       res && typeof res.data === "string"
         ? res.data
@@ -304,8 +309,8 @@ export function guardGateway(
     const bodyBytes = new TextEncoder().encode(bodyText).length;
     const quality = classifyQuality(
       {
-        timedOut: Boolean(error),
-        status: res?.status ?? 504,
+        timedOut: Boolean(error) && !settledButUnparseable,
+        status: res?.status ?? (settledButUnparseable ? 200 : 504),
         bodyBytes,
         latencyMs,
       },
@@ -320,7 +325,7 @@ export function guardGateway(
         decision:
           p.verdict.decision === "hold" ? "hold_approved" : "allow",
         ruleHit: p.verdict.ruleHit,
-        httpStatus: res?.status ?? null,
+        httpStatus: res?.status ?? (settledButUnparseable ? 200 : null),
         latencyMs,
         bodyBytes,
         bodySha256: bodyText ? await sha256Hex(bodyText) : null,
@@ -330,8 +335,16 @@ export function guardGateway(
       taskId,
     );
 
-    if (error) throw error;
-    return res as PayResult<T>;
+    if (error && !settledButUnparseable) throw error;
+    // The payment settled; the body was just empty/unparseable. Hand back an
+    // empty result rather than throwing, so the caller can decide what to do.
+    return (res ?? {
+      data: "" as unknown as T,
+      amount: BigInt(p.amountMicroUsdc),
+      formattedAmount: (p.amountMicroUsdc / 1_000_000).toFixed(6),
+      transaction: "",
+      status: 200,
+    }) as PayResult<T>;
   }
 
   return { fetch: fetchImpl, engine };
@@ -370,8 +383,9 @@ export async function reconcileFromGateway(
       pageAfter,
     });
     for (const t of transfers) {
-      // Gateway returns `amount` as a decimal USDC string.
-      const micro = Math.round(parseFloat(t.amount) * 1_000_000);
+      // Gateway `searchTransfers` returns `amount` as a string of atomic USDC
+      // units (6 decimals) — e.g. "10000" for $0.01.
+      const micro = Math.round(Number(t.amount));
       const cur = byCp.get(t.toAddress) ?? { micro: 0, lastId: t.id };
       cur.micro += Number.isFinite(micro) ? micro : 0;
       cur.lastId = t.id;

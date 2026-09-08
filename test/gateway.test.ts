@@ -156,10 +156,11 @@ describe("reconcileFromGateway", () => {
       payTo: "x",
       amountAtomic: "0",
       resourceUrl: "x",
+      // Gateway returns `amount` as atomic units (6-dec): "10000" = $0.01
       transfers: [
-        { id: "t1", amount: "0.003000", toAddress: "api.example.io", fromAddress: "a", status: "completed", createdAt: "" },
-        { id: "t2", amount: "0.005000", toAddress: "api.example.io", fromAddress: "a", status: "completed", createdAt: "" },
-        { id: "t3", amount: "0.010000", toAddress: "other.io", fromAddress: "a", status: "completed", createdAt: "" },
+        { id: "t1", amount: "3000", toAddress: "api.example.io", fromAddress: "a", status: "completed", createdAt: "" },
+        { id: "t2", amount: "5000", toAddress: "api.example.io", fromAddress: "a", status: "completed", createdAt: "" },
+        { id: "t3", amount: "10000", toAddress: "other.io", fromAddress: "a", status: "completed", createdAt: "" },
       ],
     });
     const entries = await reconcileFromGateway(client, { fromAddress: "a" });

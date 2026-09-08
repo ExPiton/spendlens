@@ -35,19 +35,24 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@circle-fin/x402-batching": "^3.4.0",
     "@tailwindcss/postcss": "^4",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^20",
     "@types/nodemailer": "^8.0.1",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@x402/core": "^2.25.0",
+    "@x402/evm": "^2.25.0",
     "drizzle-kit": "^0.31.10",
     "eslint": "^9",
     "eslint-config-next": "16.3.0",
+    "express": "^5.2.1",
     "sharp": "^0.35.3",
     "tailwindcss": "^4",
     "tsup": "^8.5.1",
     "tsx": "^4.23.12",
-    "typescript": "^5"
+    "typescript": "^5",
+    "viem": "^2.56.3"
   }
 }
