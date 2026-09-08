@@ -90,6 +90,18 @@ docker compose logs -f web
 Uygulama konteyner içinde `3000` portunda; host'ta `WEB_HOST_PORT` (varsayılan
 `3000`).
 
+**Sağlık kontrolü:** `web` servisinin bir healthcheck'i var —
+`GET /api/health` veritabanına `select 1` atar, DB ayaktaysa `200`, değilse
+`503` döner. `docker compose ps` çıktısında `web` için `healthy` görmelisin.
+Reverse proxy / uptime izleme bu ucu kullanabilir (kimlik doğrulama istemez,
+hassas bilgi dönmez).
+
+**Hız sınırı:** API-anahtarıyla yazılan uçlar konteyner-içi bellekte
+sınırlanır — ingest 240/dk/anahtar, `/api/escalate` 240/dk/anahtar,
+settlements 60/dk/kiracı. Aşımda `429` + `Retry-After`. Sınır her instance
+için ayrıdır; birden fazla `web` konteyneri çalıştıracaksan paylaşımlı bir
+sayaç (Redis) koy.
+
 ---
 
 ## 5. Önüne bir reverse proxy koy (HTTPS)

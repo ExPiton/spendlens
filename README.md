@@ -310,6 +310,41 @@ npm run db:studio     # drizzle-kit studio
 Agents and keys can be managed over REST as well as the UI (session-scoped):
 `GET`/`POST /api/agents`, `GET`/`POST /api/agents/<slug>/keys`.
 
+CI (`.github/workflows/ci.yml`) runs typecheck + lint + unit tests + app build
+on every push, and the e2e pipeline against a Postgres service container.
+
+### API endpoints for agents (API-key auth)
+
+| Endpoint | Purpose | Rate limit |
+| --- | --- | --- |
+| `POST /api/authorizations` | ingest ledger records | 240 / min / key |
+| `POST /api/escalate` | `hold` escalation webhook target (see below) | 240 / min / key |
+| `POST /api/reconciliation/settlements` | feed on-chain settlement totals | 60 / min / tenant |
+| `GET /api/health` | unauthenticated DB-round-trip probe (`200` / `503`) | — |
+
+Over-limit calls get `429` + `Retry-After`; every response carries
+`X-RateLimit-*`. The limiter is per instance — front it with a shared store
+(Redis) if you run more than one `web` container.
+
+### Escalation webhook
+
+Point a policy's `escalation.webhook` at `<APP_URL>/api/escalate` (bearer =
+the agent's API key). On a `hold` verdict the SDK POSTs the challenge and
+waits `timeout_seconds`; Spendlens auto-approves when the amount is at or below
+`counterparties.first_seen.auto_allow_below_usdc`, else denies, and records the
+outcome (`hold_approved` / `hold_denied`) to the ledger. On timeout the
+policy's `on_timeout` decides.
+
+### Surviving restarts
+
+A long-running guarded agent keeps its budget counters and burn-rate baseline
+across restarts by passing a `FilePolicyStateStore`:
+
+```ts
+import { PolicyEngine, FilePolicyStateStore } from "@spendlens/sdk";
+const engine = new PolicyEngine(policy, new FilePolicyStateStore(".spendlens-state.json"));
+```
+
 ---
 
 ## 9. Deployment
