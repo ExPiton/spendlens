@@ -95,22 +95,40 @@ proposal, caught.
   builder stage and runs migrations on boot.
 - `npm run example` — the same loop as a one-command demo.
 
-## Arc integration (added after this run — see ARC.md)
+## Arc integration (see ARC.md)
 
 - **Real Nanopayments path**: `guardGateway()` wraps
   `@circle-fin/x402-batching`'s `GatewayClient`, hooking the policy engine into
   its `onBeforePaymentCreation` lifecycle hook. Circle's SDK does the EIP-3009 /
-  `GatewayWalletBatched` EIP-712 signing; the key never leaves it. Covered by 4
-  unit tests (allow / block / denylist / quality).
+  `GatewayWalletBatched` EIP-712 signing; the key never leaves it. 4 unit tests.
 - **Real Arc settlement source**: `reconcileFromGateway()` reads
   `GatewayClient.searchTransfers()` and feeds `/api/reconciliation/settlements`
   (`npm run reconcile:arc`). 1 unit test.
 - Chain id fixed: testnet `5042002` (was wrongly `5042`, which is mainnet).
 
+## Real on-chain run — Arc testnet (`scripts/arc-live-test.mjs`)
+
+Funded wallet `0x31BBf8EF…d5E` with 20 testnet USDC from `faucet.circle.com`.
+Verified on-chain: `eth_getBalance` + USDC `balanceOf` both `20.000000`.
+
+| Step | Result |
+|---|---|
+| Deposit into Circle Gateway | on-chain tx `0x3914ee65…`, 2 USDC moved in |
+| `guardGateway` → `/premium` ($0.01) | `http 200`, **settled** — Gateway transfer id `5a5a0b44-…`, gas-free |
+| `guardGateway` → `/empty` ($0.01) | settled; recorded `allow / quality=empty` (wasted spend) |
+| `guardGateway` → `/expensive` ($5.00) | **`PolicyBlocked: per_call.max_usdc`** — aborted before signing, no funds moved |
+| `reconcileFromGateway` → `/api/reconciliation/settlements` | `200 { imported: 1 }`, chain totals from real `searchTransfers` |
+| Spendlens ledger (this agent) | 3 rows, `chainId: 5042002`, the `ok` row carries the real settlement id |
+| Gateway balance | `1.96 → 1.94` USDC (2 × $0.01 real payments) |
+
+The seller is a real `@circle-fin/x402-batching/server` middleware
+(`examples/nanopayment-seller.mjs`) — the 402 carries the actual
+`GatewayWalletBatched` scheme + Gateway Wallet `verifyingContract`.
+
 ## Remaining gaps
 
 - `createLocalSigner` is a generic ECDSA signer for non-Circle x402 servers; the
   Circle path uses `guardGateway` + `@circle-fin/x402-batching`.
-- A true on-chain run needs a Circle faucet login and a live Nanopayments seller
-  (`examples/x402-server.mjs` is a plain-header mock, not `GatewayWalletBatched`).
 - SDK is served from the app (`/downloads/spendlens-sdk.tgz`), not published to npm.
+- `@circle-fin/x402-batching`, `viem` etc. are dev deps here (for the example
+  seller + reconcile script); an agent project installs them itself.
