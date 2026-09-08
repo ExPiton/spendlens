@@ -44,16 +44,29 @@ cp .env.example .env
 `DATABASE_URL`'i elle ayarlamana gerek yok — `docker-compose.yml`, `web`
 konteyneri için onu `db` servisinden otomatik kurar.
 
-### İsteğe bağlı: Google / GitHub ile giriş
+### Google / GitHub ile giriş
 
-Boş bırakırsan ilgili buton görünmez, e-posta+parola girişi yine çalışır.
+Kod hazır — sadece OAuth uygulamalarını sen açıp `.env`'e id/secret koyacaksın.
+İkisi de boşsa butonlar görünmez, e-posta+parola girişi yine çalışır. Bir env
+çifti dolunca ilgili buton `/login` ve `/signup` sayfalarında belirir.
 
-- **GitHub:** https://github.com/settings/developers → New OAuth App
-  - Authorization callback URL: `https://spendlens.ornek.com/api/auth/callback/github`
-  - `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`
-- **Google:** https://console.cloud.google.com/apis/credentials → OAuth client ID (Web)
-  - Authorized redirect URI: `https://spendlens.ornek.com/api/auth/callback/google`
-  - `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`
+**GitHub** — https://github.com/settings/developers → **New OAuth App**
+- Homepage URL: `https://spendlens.ornek.com`
+- **Authorization callback URL:** `https://spendlens.ornek.com/api/auth/callback/github` (birebir)
+- `.env`: `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`
+
+**Google** — https://console.cloud.google.com/apis/credentials → **Create credentials → OAuth client ID → Web application**
+- **Authorized redirect URIs:** `https://spendlens.ornek.com/api/auth/callback/google` (birebir)
+- (OAuth consent screen'i de doldurman gerekir — External, birkaç scope: email, profile, openid)
+- `.env`: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`
+
+Yerelde denemek için callback'leri `http://localhost:3000/api/auth/callback/...`
+olarak da ekleyebilirsin. Env'i güncelledikten sonra `docker compose up -d`
+(ya da yerelde sunucuyu yeniden başlat).
+
+Hesaplar doğrulanmış e-postaya göre birleşir: parolayla kayıt olan biri sonradan
+**Ayarlar → Connected accounts**'tan Google/GitHub ekleyip çıkarabilir
+(en az bir giriş yöntemi kalmak şartıyla).
 
 ---
 

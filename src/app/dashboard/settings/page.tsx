@@ -1,6 +1,8 @@
 import Link from "next/link";
 import { requireUser } from "@/lib/auth/dal";
+import { enabledSocialProviders } from "@/lib/auth";
 import { AccountSettings } from "@/components/dashboard/AccountSettings";
+import { ConnectedAccounts } from "@/components/dashboard/ConnectedAccounts";
 import { DangerZone } from "@/components/dashboard/DangerZone";
 
 export const metadata = { title: "Account settings · Spendlens" };
@@ -23,6 +25,8 @@ export default async function SettingsPage() {
         email={user.email}
         emailVerified={user.emailVerified}
       />
+
+      <ConnectedAccounts providers={enabledSocialProviders} />
 
       <DangerZone />
     </div>

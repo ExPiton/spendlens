@@ -261,11 +261,19 @@ EIP-3009 / `GatewayWalletBatched` details: **[ARC.md](ARC.md)**.
 ## 7. Accounts, Tenancy & Auth
 
 - **Auth** is [Better Auth](https://better-auth.com): e-mail + password with
-  password reset, plus optional Google / GitHub sign-in (enabled only when the
-  matching `*_CLIENT_ID` / `*_CLIENT_SECRET` are set). E-mail **verification is
+  password reset, plus **Google / GitHub sign-in**. E-mail **verification is
   currently off** — signup logs the user straight in; re-enable via
   `requireEmailVerification` in `src/lib/auth/index.ts` and the check in
   `src/lib/auth/dal.ts`.
+- **Google / GitHub** activate automatically when their env vars are set (the
+  buttons hide otherwise). Create the OAuth apps, set the redirect URI to
+  `<APP_URL>/api/auth/callback/<github|google>`, put the id/secret in `.env`:
+  - GitHub → <https://github.com/settings/developers> → New OAuth App
+  - Google → <https://console.cloud.google.com/apis/credentials> → OAuth client ID (Web)
+
+  Accounts link by verified e-mail, so one person signing up with a password can
+  add Google/GitHub later on **Settings → Connected accounts** (and unlink,
+  as long as one method remains).
 - **Every row is tenant-scoped.** Agents, API keys, policies, the ledger, and
   reconciliation all carry a `userId`; every dashboard query and API route is
   scoped to the signed-in user (see `src/lib/db/repository.ts` and

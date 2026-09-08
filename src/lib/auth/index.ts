@@ -19,20 +19,25 @@ function trustedOrigins(): string[] {
 type SocialProviders = NonNullable<Parameters<typeof betterAuth>[0]["socialProviders"]>;
 
 /** Only register a social provider when both its env vars are present, so the
- *  app runs fine with no OAuth configured (the buttons hide themselves). */
+ *  app runs fine with no OAuth configured (the buttons hide themselves).
+ *  Callback URL for each provider is `${APP_URL}/api/auth/callback/<provider>`. */
 function socialProviders(): SocialProviders {
   const providers: SocialProviders = {};
-  if (process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET) {
-    providers.github = {
-      clientId: process.env.GITHUB_CLIENT_ID,
-      clientSecret: process.env.GITHUB_CLIENT_SECRET,
-    };
-  }
-  if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
-    providers.google = {
-      clientId: process.env.GOOGLE_CLIENT_ID,
-      clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-    };
+  const pairs = [
+    ["github", "GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET"],
+    ["google", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"],
+  ] as const;
+
+  for (const [name, idKey, secretKey] of pairs) {
+    const id = process.env[idKey];
+    const secret = process.env[secretKey];
+    if (id && secret) {
+      providers[name] = { clientId: id, clientSecret: secret };
+    } else if (id || secret) {
+      console.warn(
+        `[spendlens] ${name} OAuth is half-configured — set both ${idKey} and ${secretKey}. Provider disabled.`,
+      );
+    }
   }
   return providers;
 }

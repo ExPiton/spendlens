@@ -11,6 +11,10 @@ export function LoginForm() {
   const params = useSearchParams();
   const next = params.get("next") || "/dashboard";
 
+  const oauthError =
+    params.get("error") &&
+    "Sign-in with that provider didn't complete. Try again or use your email and password.";
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -34,7 +38,7 @@ export function LoginForm() {
 
   return (
     <form onSubmit={onSubmit} className="space-y-3">
-      <FormError>{error}</FormError>
+      <FormError>{error || oauthError}</FormError>
       <Field
         label="Email"
         type="email"
