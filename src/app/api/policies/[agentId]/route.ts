@@ -1,6 +1,23 @@
 import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { getPolicyBySlug, upsertPolicy } from "@/lib/db/policy";
 import { requireSessionUser, isResponse } from "@/lib/auth/api";
+
+/** A validation failure is the *expected*, helpful kind of error here — the
+ *  operator is actively editing YAML and needs to know which field is wrong,
+ *  not "Invalid policy YAML" with no further detail (what used to show:
+ *  Zod's raw `.message`, a JSON-stringified issue array dumped straight into
+ *  the UI). Anything else (a DB failure, etc.) stays generic and logged
+ *  server-side instead of echoed to the client. */
+function describePolicyError(err: unknown): string {
+  if (err instanceof z.ZodError) {
+    return err.issues
+      .map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`)
+      .join("; ");
+  }
+  console.error("[spendlens] policy save failed:", err);
+  return "Invalid policy YAML";
+}
 
 export async function GET(
   _request: NextRequest,
@@ -25,10 +42,8 @@ export async function GET(
       version: policy.version,
     });
   } catch (err) {
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Internal Server Error" },
-      { status: 500 },
-    );
+    console.error("[spendlens] GET /api/policies failed:", err);
+    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }
 
@@ -57,9 +72,6 @@ export async function POST(
       version: saved.version,
     });
   } catch (err) {
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Invalid policy YAML" },
-      { status: 400 },
-    );
+    return NextResponse.json({ error: describePolicyError(err) }, { status: 400 });
   }
 }

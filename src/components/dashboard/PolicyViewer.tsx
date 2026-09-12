@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import type { PolicyConfig } from "@/lib/contracts";
 import { Button } from "@/components/ui/Button";
 
@@ -11,6 +12,7 @@ interface PolicyViewerProps {
 }
 
 export function PolicyViewer({ agentId, initialYaml, config }: PolicyViewerProps) {
+  const router = useRouter();
   const [rawYaml, setRawYaml] = useState(initialYaml);
   const [isSaving, setIsSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState<{ success?: boolean; message?: string } | null>(null);
@@ -29,6 +31,11 @@ export function PolicyViewer({ agentId, initialYaml, config }: PolicyViewerProps
       const data = await res.json();
       if (res.ok && data.success) {
         setSaveStatus({ success: true, message: "Policy validated and saved successfully!" });
+        // The summary cards above read `config` straight from props (this
+        // component's own server-rendered parent) — without a refresh they
+        // silently keep showing the values from before the save, even
+        // though the save itself succeeded and persisted.
+        router.refresh();
       } else {
         setSaveStatus({ success: false, message: data.error || "Policy doesn't match the schema." });
       }

@@ -41,9 +41,7 @@ export async function POST(request: NextRequest) {
     const count = await importSettlements(userId, parsed.settlements);
     return NextResponse.json({ success: true, imported: count });
   } catch (err) {
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Invalid settlements payload" },
-      { status: 400 },
-    );
+    console.error("[spendlens] POST /api/reconciliation/settlements failed:", err);
+    return NextResponse.json({ error: "Invalid settlements payload" }, { status: 400 });
   }
 }

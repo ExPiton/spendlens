@@ -57,7 +57,7 @@ export async function POST(request: NextRequest) {
           resource: attackerAddress,
           amountMicroUsdc,
           decision: verdict.decision === "block" ? "block" : "hold_denied",
-          ruleHit: verdict.ruleHit || "counterparties.mode",
+          ruleHit: verdict.ruleHit,
           nonce: null,
           chainId: ARC.chainId,
           httpStatus: null,
@@ -214,9 +214,7 @@ export async function POST(request: NextRequest) {
       record,
     });
   } catch (err) {
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Simulation failed" },
-      { status: 500 },
-    );
+    console.error("[spendlens] POST /api/simulate failed:", err);
+    return NextResponse.json({ error: "Simulation failed" }, { status: 500 });
   }
 }

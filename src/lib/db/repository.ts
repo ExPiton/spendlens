@@ -1,5 +1,5 @@
 import "server-only";
-import { and, asc, desc, eq, gte, lt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, lt, sql } from "drizzle-orm";
 import { db } from "./index";
 import {
   agent as agentTable,
@@ -23,7 +23,7 @@ import {
   type ReconciliationRecord,
   type ReconciliationStatus,
 } from "@/lib/contracts";
-import { classifyReconciliation, computeWaste } from "@/lib/engine";
+import { classifyReconciliation } from "@/lib/engine";
 
 /**
  * Per-tenant data access over Postgres. Function signatures mirror the old
@@ -34,10 +34,6 @@ import { classifyReconciliation, computeWaste } from "@/lib/engine";
  */
 
 export const ALL_AGENTS = "all";
-
-/** Safety cap on the fetch-then-compute paths. A single tenant is not expected
- *  to exceed this in the v1 window; revisit with SQL rollups if they do. */
-const MAX_SCAN_ROWS = 200_000;
 
 const TOLERANCE_MICRO_USDC = 50; // 0.00005 USDC — absorbs rounding
 
@@ -66,49 +62,155 @@ function toAuthorizationRecord(r: AuthorizationRow): AuthorizationRecord {
   });
 }
 
-type ScanRow = Pick<
-  AuthorizationRecord,
-  | "agentId"
-  | "decision"
-  | "quality"
-  | "amountMicroUsdc"
-  | "counterparty"
-  | "ts"
-  | "ruleHit"
->;
+/**
+ * Every aggregate below used to be computed by pulling up to 200,000 raw
+ * rows over the wire and reducing them in JS (`scanRows` + `Array.filter`/
+ * `.reduce`) — capped, so a tenant past that cap got a dashboard that just
+ * silently stopped counting its oldest rows, no warning, numbers that still
+ * *looked* plausible while quietly being wrong. Postgres can compute every
+ * one of these SUMs/COUNTs itself, at any scale, without shipping a single
+ * row of raw data to Node — that's what `sum(...) filter (where ...)` and
+ * `count(...) filter (where ...)` below do.
+ */
 
-/** Lean projection for the aggregate screens — avoids hauling body hashes and
- *  nonces across the wire just to sum amounts. */
-async function scanRows(userId: string, agentSlug?: string): Promise<ScanRow[]> {
-  const where =
-    agentSlug && agentSlug !== ALL_AGENTS
-      ? and(eq(authTable.userId, userId), eq(authTable.agentSlug, agentSlug))
-      : eq(authTable.userId, userId);
+function scopeByAgent(userId: string, agentSlug?: string) {
+  return agentSlug && agentSlug !== ALL_AGENTS
+    ? and(eq(authTable.userId, userId), eq(authTable.agentSlug, agentSlug))
+    : eq(authTable.userId, userId);
+}
 
+const BLOCKED_DECISIONS = sql`(${authTable.decision} in ('block', 'hold_denied'))`;
+const HOLD_DECISIONS = sql`(${authTable.decision} in ('hold_approved', 'hold_denied'))`;
+/** `'allow'` and `'hold_approved'` are the two outcomes that actually carry
+ *  a quality classification (the call went through) — `'block'`/`'hold_denied'`
+ *  never reach the point where a response body exists to classify. */
+const QUALITY_ELIGIBLE_DECISIONS = sql`(${authTable.decision} in ('allow', 'hold_approved'))`;
+
+interface AgentAggregate {
+  totalSpendMicroUsdc: number;
+  wastedMicroUsdc: number;
+  allowedCount: number;
+  blockedCount: number;
+  holdCount: number;
+  counterpartyCount: number;
+  lastActivityTs: string | null;
+}
+
+/** One row per agent with activity, keyed by agent slug. An agent with zero
+ *  authorization rows simply has no entry — callers zero-fill from the
+ *  agent list, same as the old scan-based code did. */
+async function agentAggregates(
+  userId: string,
+  agentSlug?: string,
+): Promise<Map<string, AgentAggregate>> {
   const rows = await db
     .select({
-      agentId: authTable.agentSlug,
-      decision: authTable.decision,
-      quality: authTable.quality,
-      amountMicroUsdc: authTable.amountMicroUsdc,
-      counterparty: authTable.counterparty,
-      ts: authTable.ts,
-      ruleHit: authTable.ruleHit,
+      agentSlug: authTable.agentSlug,
+      totalSpend: sql<string>`coalesce(sum(${authTable.amountMicroUsdc}) filter (where ${authTable.decision} = 'allow'), 0)`,
+      wasted: sql<string>`coalesce(sum(${authTable.amountMicroUsdc}) filter (where ${authTable.decision} = 'allow' and ${authTable.quality} is distinct from 'ok'), 0)`,
+      allowedCount: sql<number>`(count(*) filter (where ${authTable.decision} = 'allow'))::int`,
+      blockedCount: sql<number>`(count(*) filter (where ${BLOCKED_DECISIONS}))::int`,
+      holdCount: sql<number>`(count(*) filter (where ${HOLD_DECISIONS}))::int`,
+      counterpartyCount: sql<number>`(count(distinct ${authTable.counterparty}))::int`,
+      lastActivityTs: sql<string | Date | null>`max(${authTable.ts})`,
     })
     .from(authTable)
-    .where(where)
-    .orderBy(asc(authTable.ts))
-    .limit(MAX_SCAN_ROWS);
+    .where(scopeByAgent(userId, agentSlug))
+    .groupBy(authTable.agentSlug);
 
-  return rows.map((r) => ({
-    agentId: r.agentId,
-    decision: r.decision as Decision,
-    quality: r.quality as Quality | null,
-    amountMicroUsdc: r.amountMicroUsdc,
+  return new Map(
+    rows.map((r) => [
+      r.agentSlug,
+      {
+        totalSpendMicroUsdc: Number(r.totalSpend),
+        wastedMicroUsdc: Number(r.wasted),
+        allowedCount: r.allowedCount,
+        blockedCount: r.blockedCount,
+        holdCount: r.holdCount,
+        counterpartyCount: r.counterpartyCount,
+        lastActivityTs: r.lastActivityTs ? new Date(r.lastActivityTs).toISOString() : null,
+      },
+    ]),
+  );
+}
+
+function toAgentSummary(agentSlug: string, agg: AgentAggregate | undefined): AgentSummary {
+  return AgentSummarySchema.parse({
+    agentId: agentSlug,
+    totalSpendMicroUsdc: agg?.totalSpendMicroUsdc ?? 0,
+    wastedMicroUsdc: agg?.wastedMicroUsdc ?? 0,
+    wastedRatio:
+      agg && agg.totalSpendMicroUsdc > 0 ? agg.wastedMicroUsdc / agg.totalSpendMicroUsdc : 0,
+    allowedCount: agg?.allowedCount ?? 0,
+    blockedCount: agg?.blockedCount ?? 0,
+    holdCount: agg?.holdCount ?? 0,
+    counterpartyCount: agg?.counterpartyCount ?? 0,
+    lastActivityTs: agg?.lastActivityTs ?? null,
+  });
+}
+
+function counterpartyAggregateColumns() {
+  return {
+    counterparty: authTable.counterparty,
+    callCount: sql<number>`count(*)::int`,
+    totalSpend: sql<string>`coalesce(sum(${authTable.amountMicroUsdc}) filter (where ${authTable.decision} = 'allow'), 0)`,
+    allowedCount: sql<number>`(count(*) filter (where ${authTable.decision} = 'allow'))::int`,
+    blockedCount: sql<number>`(count(*) filter (where ${BLOCKED_DECISIONS}))::int`,
+    holdCount: sql<number>`(count(*) filter (where ${HOLD_DECISIONS}))::int`,
+    qualityTotal: sql<number>`(count(*) filter (where ${QUALITY_ELIGIBLE_DECISIONS} and ${authTable.quality} is not null))::int`,
+    qualityOk: sql<number>`(count(*) filter (where ${QUALITY_ELIGIBLE_DECISIONS} and ${authTable.quality} = 'ok'))::int`,
+    firstSeenTs: sql<string | Date>`min(${authTable.ts})`,
+  };
+}
+
+function toCounterpartySummary(r: {
+  counterparty: string;
+  callCount: number;
+  totalSpend: string;
+  allowedCount: number;
+  blockedCount: number;
+  holdCount: number;
+  qualityTotal: number;
+  qualityOk: number;
+  firstSeenTs: string | Date;
+}): CounterpartySummary {
+  return CounterpartySummarySchema.parse({
     counterparty: r.counterparty,
-    ts: r.ts.toISOString(),
-    ruleHit: r.ruleHit,
-  }));
+    totalSpendMicroUsdc: Number(r.totalSpend),
+    callCount: r.callCount,
+    qualityScore: r.qualityTotal > 0 ? r.qualityOk / r.qualityTotal : 1,
+    allowedCount: r.allowedCount,
+    blockedCount: r.blockedCount,
+    holdCount: r.holdCount,
+    firstSeenTs: new Date(r.firstSeenTs).toISOString(),
+  });
+}
+
+/** Per-counterparty `allow`-decision spend within `[start, end)`, in the
+ *  same currency units the ledger uses. Feeds reconciliation's "what does
+ *  the ledger say we spent this period" side. */
+async function ledgerSpendByCounterparty(
+  userId: string,
+  start: Date,
+  end: Date,
+): Promise<Map<string, number>> {
+  const rows = await db
+    .select({
+      counterparty: authTable.counterparty,
+      total: sql<string>`sum(${authTable.amountMicroUsdc})`,
+    })
+    .from(authTable)
+    .where(
+      and(
+        eq(authTable.userId, userId),
+        eq(authTable.decision, "allow"),
+        gte(authTable.ts, start),
+        lt(authTable.ts, end),
+      ),
+    )
+    .groupBy(authTable.counterparty);
+
+  return new Map(rows.map((r) => [r.counterparty, Number(r.total)]));
 }
 
 // ── period ──────────────────────────────────────────────────────────────────
@@ -139,6 +241,27 @@ export async function getLedgerPeriod(
   };
 }
 
+/** Total call count and first-activity timestamp for one agent — the two
+ *  numbers `isColdStart` needs to tell a real "still warming up" state from
+ *  a real "anomaly rules are actively blocking" one. */
+export async function getAgentActivityWindow(
+  userId: string,
+  agentSlug: string,
+): Promise<{ totalCount: number; firstActivityTs: string | null }> {
+  const [row] = await db
+    .select({
+      totalCount: sql<number>`count(*)::int`,
+      firstActivityTs: sql<string | Date | null>`min(${authTable.ts})`,
+    })
+    .from(authTable)
+    .where(and(eq(authTable.userId, userId), eq(authTable.agentSlug, agentSlug)));
+
+  return {
+    totalCount: row?.totalCount ?? 0,
+    firstActivityTs: row?.firstActivityTs ? new Date(row.firstActivityTs).toISOString() : null,
+  };
+}
+
 // ── agents ──────────────────────────────────────────────────────────────────
 
 export async function listAgentOptions(
@@ -166,46 +289,16 @@ export async function getAgentLabels(
   return Object.fromEntries(agents.map((a) => [a.slug, a.label]));
 }
 
-function summarizeAgent(agentSlug: string, records: ScanRow[]): AgentSummary {
-  const { wastedMicroUsdc, totalAllowedMicroUsdc, ratio } = computeWaste(records);
-  const lastActivityTs = records.reduce<string | null>(
-    (latest, r) => (!latest || r.ts > latest ? r.ts : latest),
-    null,
-  );
-  return AgentSummarySchema.parse({
-    agentId: agentSlug,
-    totalSpendMicroUsdc: totalAllowedMicroUsdc,
-    wastedMicroUsdc,
-    wastedRatio: ratio,
-    allowedCount: records.filter((r) => r.decision === "allow").length,
-    blockedCount: records.filter(
-      (r) => r.decision === "block" || r.decision === "hold_denied",
-    ).length,
-    holdCount: records.filter(
-      (r) => r.decision === "hold_approved" || r.decision === "hold_denied",
-    ).length,
-    counterpartyCount: new Set(records.map((r) => r.counterparty)).size,
-    lastActivityTs,
-  });
-}
-
 export async function listAgents(userId: string): Promise<AgentSummary[]> {
-  const [agents, rows] = await Promise.all([
+  const [agents, aggMap] = await Promise.all([
     db
       .select({ slug: agentTable.slug })
       .from(agentTable)
       .where(eq(agentTable.userId, userId))
       .orderBy(asc(agentTable.createdAt)),
-    scanRows(userId),
+    agentAggregates(userId),
   ]);
-
-  const byAgent = new Map<string, ScanRow[]>();
-  for (const r of rows) {
-    const list = byAgent.get(r.agentId);
-    if (list) list.push(r);
-    else byAgent.set(r.agentId, [r]);
-  }
-  return agents.map((a) => summarizeAgent(a.slug, byAgent.get(a.slug) ?? []));
+  return agents.map((a) => toAgentSummary(a.slug, aggMap.get(a.slug)));
 }
 
 export async function getAgent(
@@ -219,8 +312,8 @@ export async function getAgent(
     .limit(1);
   if (!row) return null;
 
-  const records = await scanRows(userId, agentSlug);
-  return { ...summarizeAgent(agentSlug, records), label: row.label };
+  const aggMap = await agentAggregates(userId, agentSlug);
+  return { ...toAgentSummary(agentSlug, aggMap.get(agentSlug)), label: row.label };
 }
 
 // ── overview ────────────────────────────────────────────────────────────────
@@ -229,24 +322,39 @@ export async function getOverviewStats(
   userId: string,
   agentSlug: string = ALL_AGENTS,
 ): Promise<OverviewStats> {
-  const [scoped, period, reconciliation] = await Promise.all([
-    scanRows(userId, agentSlug),
+  const where = scopeByAgent(userId, agentSlug);
+
+  const [[agg], period, reconciliation, agentCounterparties] = await Promise.all([
+    db
+      .select({
+        totalSpend: sql<string>`coalesce(sum(${authTable.amountMicroUsdc}) filter (where ${authTable.decision} = 'allow'), 0)`,
+        wasted: sql<string>`coalesce(sum(${authTable.amountMicroUsdc}) filter (where ${authTable.decision} = 'allow' and ${authTable.quality} is distinct from 'ok'), 0)`,
+        blockedCount: sql<number>`(count(*) filter (where ${BLOCKED_DECISIONS}))::int`,
+        blockedMicro: sql<string>`coalesce(sum(${authTable.amountMicroUsdc}) filter (where ${BLOCKED_DECISIONS}), 0)`,
+      })
+      .from(authTable)
+      .where(where),
     getLedgerPeriod(userId),
     listReconciliation(userId),
+    // Reconciliation rows aren't per-agent, so scoping the overview to one
+    // agent means filtering them down to that agent's own counterparties —
+    // a cheap DISTINCT, not a row scan.
+    agentSlug === ALL_AGENTS
+      ? null
+      : db.selectDistinct({ counterparty: authTable.counterparty }).from(authTable).where(where),
   ]);
 
-  const { wastedMicroUsdc, totalAllowedMicroUsdc, ratio } = computeWaste(scoped);
-  const blocked = scoped.filter(
-    (r) => r.decision === "block" || r.decision === "hold_denied",
-  );
-  const blockedMicroUsdc = blocked.reduce((s, r) => s + r.amountMicroUsdc, 0);
+  const totalAllowedMicroUsdc = Number(agg.totalSpend);
+  const wastedMicroUsdc = Number(agg.wasted);
+  const ratio = totalAllowedMicroUsdc > 0 ? wastedMicroUsdc / totalAllowedMicroUsdc : 0;
+  const blockedMicroUsdc = Number(agg.blockedMicro);
 
-  const relevant =
-    agentSlug === ALL_AGENTS
-      ? reconciliation
-      : reconciliation.filter((r) =>
-          new Set(scoped.map((s) => s.counterparty)).has(r.counterparty),
-        );
+  const relevant = agentCounterparties
+    ? (() => {
+        const set = new Set(agentCounterparties.map((c) => c.counterparty));
+        return reconciliation.filter((r) => set.has(r.counterparty));
+      })()
+    : reconciliation;
 
   const worst: ReconciliationStatus = relevant.some((r) => r.status === "critical")
     ? "critical"
@@ -260,7 +368,7 @@ export async function getOverviewStats(
     totalSpendMicroUsdc: totalAllowedMicroUsdc,
     wastedMicroUsdc,
     wastedRatio: ratio,
-    blockedCount: blocked.length,
+    blockedCount: agg.blockedCount,
     blockedMicroUsdc,
     reconciliationStatus: worst,
     reconciliationDeltaMicroUsdc: relevant.reduce(
@@ -278,6 +386,13 @@ export interface AuthorizationFilters {
   decision?: Decision;
   quality?: Quality | "any";
   search?: string;
+  /** Rows where a rule actually fired — block/hold decisions, and an
+   *  `allow` that still carries an `alert`-only rule's ruleHit (see
+   *  PolicyEngine.evaluate). This is the "everything the policy or anomaly
+   *  system flagged" view; unlike filtering on `decision`, it also surfaces
+   *  an `alert` action's signal, which never blocks or holds a call and so
+   *  would otherwise show up nowhere at all. */
+  flagged?: boolean;
   page?: number;
   pageSize?: number;
 }
@@ -299,6 +414,7 @@ export async function listAuthorizations(
     decision,
     quality,
     search,
+    flagged,
     page = 1,
     pageSize = 50,
   } = filters;
@@ -310,6 +426,7 @@ export async function listAuthorizations(
   if (counterparty) conds.push(eq(authTable.counterparty, counterparty));
   if (decision) conds.push(eq(authTable.decision, decision));
   if (quality && quality !== "any") conds.push(eq(authTable.quality, quality));
+  if (flagged) conds.push(sql`${authTable.ruleHit} is not null`);
   if (search) {
     const q = `%${search.toLowerCase()}%`;
     conds.push(
@@ -341,56 +458,18 @@ export async function listAuthorizations(
 
 // ── counterparties ──────────────────────────────────────────────────────────
 
-function summarizeCounterparty(
-  counterparty: string,
-  records: ScanRow[],
-): CounterpartySummary {
-  const withQuality = records.filter(
-    (r) =>
-      (r.decision === "allow" || r.decision === "hold_approved") &&
-      r.quality !== null,
-  );
-  const okCount = withQuality.filter((r) => r.quality === "ok").length;
-  const qualityScore = withQuality.length > 0 ? okCount / withQuality.length : 1;
-
-  const totalSpendMicroUsdc = records
-    .filter((r) => r.decision === "allow")
-    .reduce((s, r) => s + r.amountMicroUsdc, 0);
-
-  const firstSeenTs = records.reduce(
-    (earliest, r) => (r.ts < earliest ? r.ts : earliest),
-    records[0]?.ts ?? new Date().toISOString(),
-  );
-
-  return CounterpartySummarySchema.parse({
-    counterparty,
-    totalSpendMicroUsdc,
-    callCount: records.length,
-    qualityScore,
-    allowedCount: records.filter((r) => r.decision === "allow").length,
-    blockedCount: records.filter(
-      (r) => r.decision === "block" || r.decision === "hold_denied",
-    ).length,
-    holdCount: records.filter(
-      (r) => r.decision === "hold_approved" || r.decision === "hold_denied",
-    ).length,
-    firstSeenTs,
-  });
-}
-
 export async function listCounterparties(
   userId: string,
   agentSlug?: string,
 ): Promise<CounterpartySummary[]> {
-  const rows = await scanRows(userId, agentSlug);
-  const groups = new Map<string, ScanRow[]>();
-  for (const r of rows) {
-    const list = groups.get(r.counterparty);
-    if (list) list.push(r);
-    else groups.set(r.counterparty, [r]);
-  }
-  return Array.from(groups.entries())
-    .map(([cp, recs]) => summarizeCounterparty(cp, recs))
+  const rows = await db
+    .select(counterpartyAggregateColumns())
+    .from(authTable)
+    .where(scopeByAgent(userId, agentSlug))
+    .groupBy(authTable.counterparty);
+
+  return rows
+    .map(toCounterpartySummary)
     .sort((a, b) => b.totalSpendMicroUsdc - a.totalSpendMicroUsdc);
 }
 
@@ -398,11 +477,30 @@ export async function getCounterparty(
   userId: string,
   counterparty: string,
 ): Promise<CounterpartySummary | null> {
-  const rows = (await scanRows(userId)).filter(
-    (r) => r.counterparty === counterparty,
-  );
-  if (rows.length === 0) return null;
-  return summarizeCounterparty(counterparty, rows);
+  const [row] = await db
+    .select(counterpartyAggregateColumns())
+    .from(authTable)
+    .where(and(eq(authTable.userId, userId), eq(authTable.counterparty, counterparty)))
+    .groupBy(authTable.counterparty);
+  if (!row) return null;
+  return toCounterpartySummary(row);
+}
+
+/** Which agents actually paid one of the given counterparties — reconciliation
+ *  rows are per-counterparty, not per-agent, so "halt the agents behind this
+ *  critical mismatch" needs this lookup to know which agents to pause. */
+export async function listAgentSlugsForCounterparties(
+  userId: string,
+  counterparties: string[],
+): Promise<string[]> {
+  if (counterparties.length === 0) return [];
+  const rows = await db
+    .selectDistinct({ agentSlug: authTable.agentSlug })
+    .from(authTable)
+    .where(
+      and(eq(authTable.userId, userId), inArray(authTable.counterparty, counterparties)),
+    );
+  return rows.map((r) => r.agentSlug);
 }
 
 // ── reconciliation ──────────────────────────────────────────────────────────
@@ -442,26 +540,16 @@ export async function listReconciliation(
  * so seeded/real divergences survive a recompute.
  */
 export async function recomputeReconciliation(userId: string): Promise<number> {
-  const [rows, period, existing] = await Promise.all([
-    scanRows(userId),
-    getLedgerPeriod(userId),
+  const period = await getLedgerPeriod(userId);
+  const start = new Date(period.start);
+  const end = new Date(period.end);
+
+  const [ledgerByCp, existing] = await Promise.all([
+    ledgerSpendByCounterparty(userId, start, end),
     db.select().from(reconTable).where(eq(reconTable.userId, userId)),
   ]);
 
-  const start = new Date(period.start);
-  const end = new Date(period.end);
   const chainByCp = new Map(existing.map((r) => [r.counterparty, r]));
-
-  const ledgerByCp = new Map<string, number>();
-  for (const r of rows) {
-    if (r.decision !== "allow") continue;
-    const ts = new Date(r.ts);
-    if (ts < start || ts >= end) continue;
-    ledgerByCp.set(
-      r.counterparty,
-      (ledgerByCp.get(r.counterparty) ?? 0) + r.amountMicroUsdc,
-    );
-  }
   for (const cp of chainByCp.keys()) {
     if (!ledgerByCp.has(cp)) ledgerByCp.set(cp, 0);
   }
@@ -520,23 +608,10 @@ export async function importSettlements(
   entries: SettlementEntry[],
 ): Promise<number> {
   if (entries.length === 0) return 0;
-  const [rows, period] = await Promise.all([
-    scanRows(userId),
-    getLedgerPeriod(userId),
-  ]);
+  const period = await getLedgerPeriod(userId);
   const start = new Date(period.start);
   const end = new Date(period.end);
-
-  const ledgerByCp = new Map<string, number>();
-  for (const r of rows) {
-    if (r.decision !== "allow") continue;
-    const ts = new Date(r.ts);
-    if (ts < start || ts >= end) continue;
-    ledgerByCp.set(
-      r.counterparty,
-      (ledgerByCp.get(r.counterparty) ?? 0) + r.amountMicroUsdc,
-    );
-  }
+  const ledgerByCp = await ledgerSpendByCounterparty(userId, start, end);
 
   let n = 0;
   for (const e of entries) {

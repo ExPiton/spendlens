@@ -15,9 +15,7 @@ export async function GET(request: NextRequest) {
     );
     return NextResponse.json({ counterparties });
   } catch (err) {
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Internal Server Error" },
-      { status: 500 },
-    );
+    console.error("[spendlens] GET /api/counterparties failed:", err);
+    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }

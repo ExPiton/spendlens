@@ -1,4 +1,4 @@
-import { formatPercent, formatUsdcTotal } from "@/lib/format";
+import { formatPercent, formatUsdcPrecise } from "@/lib/format";
 
 interface WasteCalloutProps {
   agentName?: string;
@@ -31,11 +31,11 @@ export function WasteCallout({
           <p className="mt-1 text-xl font-semibold tracking-tight sm:text-2xl">
             &ldquo;{agentName} spent{" "}
             <span className="font-mono text-fg font-bold">
-              ${formatUsdcTotal(totalSpendMicroUsdc)}
+              {formatUsdcPrecise(totalSpendMicroUsdc)} USDC
             </span>{" "}
             this period. Of that,{" "}
             <span className="font-mono text-critical font-bold">
-              ${formatUsdcTotal(wastedMicroUsdc)}
+              {formatUsdcPrecise(wastedMicroUsdc)} USDC
             </span>{" "}
             ({formatPercent(wastedRatio)}) went unmatched.&rdquo;
           </p>

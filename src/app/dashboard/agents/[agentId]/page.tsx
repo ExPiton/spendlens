@@ -37,7 +37,16 @@ export default async function AgentDetailPage(props: AgentDetailPageProps) {
   if (!agent || !record) notFound();
 
   const keys = await listApiKeys(user.id, record.id);
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "";
+  // APP_URL, not NEXT_PUBLIC_APP_URL: this is a server component, but
+  // Next.js still statically inlines any `process.env.NEXT_PUBLIC_*`
+  // reference at build time — even server-side — since the whole point of
+  // the prefix is "safe to bake in anywhere". The Dockerfile's build stage
+  // sets it to a localhost placeholder (real config isn't available yet
+  // while building the image), so every deployed instance showed the same
+  // wrong "npm install http://localhost:3000/..." snippet regardless of its
+  // real domain. Plain APP_URL has no such prefix, so it's never inlined —
+  // it's read fresh from the container's actual runtime environment.
+  const appUrl = process.env.APP_URL ?? "";
   const ingestUrl = `${appUrl}/api/authorizations`;
 
   return (

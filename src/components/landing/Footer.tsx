@@ -39,7 +39,7 @@ export function Footer() {
         </div>
 
         <div className="mt-14 flex flex-col gap-3 border-t border-border pt-6 text-xs text-muted sm:flex-row sm:items-center sm:justify-between">
-          <span>© 2026 Spendlens · MIT License</span>
+          <span>© 2026 Spendlens</span>
           <span>Dashboard: Next.js · Chain access: Arc (EVM-compatible)</span>
         </div>
       </div>

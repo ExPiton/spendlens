@@ -126,6 +126,78 @@ describe("Spendlens SDK Guard Interception", () => {
     assert.equal(body.data, "verified market analysis");
   });
 
+  test("REGRESSION: the escalation webhook is called with the agent's API key, not anonymously", async () => {
+    let escalationAuthHeader: string | null = null;
+    const mockFetch: typeof fetch = async (input, init) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url === testPolicy.escalation.webhook) {
+        escalationAuthHeader = new Headers(init?.headers).get("Authorization");
+        return new Response(JSON.stringify({ approved: true }), { status: 200 });
+      }
+      const authHeader = new Headers(init?.headers).get("Authorization");
+      if (!authHeader) {
+        return new Response(JSON.stringify({ error: "Payment required" }), {
+          status: 402,
+          headers: { "x-pay-to": "unknown-vendor.io", "x-pay-amount": "0.02" },
+        });
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    };
+
+    const pay = guard({
+      agentId: "test-agent-01",
+      policy: testPolicy,
+      fetchFn: mockFetch,
+      apiKey: "sl_test_key_456",
+      signer: async (challenge) => ({ paymentHeader: "Bearer sig", nonce: challenge.nonce }),
+    });
+
+    const res = await pay.fetch("https://unknown-vendor.io/v1/item");
+    assert.equal(res.status, 200);
+    assert.equal(escalationAuthHeader, "Bearer sl_test_key_456");
+  });
+
+  test("REGRESSION: a streamed request body survives the probe-then-pay retry intact", async () => {
+    // A ReadableStream body can only be read once. The probe request used
+    // to consume it, leaving the paid retry with nothing — silently
+    // corrupting the actual POST once payment was authorized.
+    const seenBodies: string[] = [];
+    const mockFetch: typeof fetch = async (_input, init) => {
+      const authHeader = new Headers(init?.headers).get("Authorization");
+      seenBodies.push(
+        init?.body instanceof ArrayBuffer ? new TextDecoder().decode(init.body) : "",
+      );
+      if (!authHeader) {
+        return new Response(JSON.stringify({ error: "Payment required" }), {
+          status: 402,
+          headers: { "x-pay-to": "api.allowed.io", "x-pay-amount": "0.003" },
+        });
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    };
+
+    const streamBody = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("hello-payload"));
+        controller.close();
+      },
+    });
+
+    const pay = guard({
+      agentId: "test-agent-01",
+      policy: testPolicy,
+      fetchFn: mockFetch,
+      signer: async (challenge) => ({ paymentHeader: "Bearer sig", nonce: challenge.nonce }),
+    });
+
+    await pay.fetch("https://api.allowed.io/v1/submit", {
+      method: "POST",
+      body: streamBody,
+    });
+
+    assert.deepEqual(seenBodies, ["hello-payload", "hello-payload"]);
+  });
+
   test("throws PolicyBlocked when 402 challenge targets a denied counterparty", async () => {
     const mockFetch: typeof fetch = async () => {
       return new Response("Payment Required", {

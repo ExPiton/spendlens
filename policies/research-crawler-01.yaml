@@ -47,3 +47,9 @@ escalation:
   webhook: "https://ops.example.io/hooks/spendlens"
   timeout_seconds: 30
   on_timeout: block
+  # Ceiling for Spendlens's own /api/escalate to auto-approve a hold.
+  # Separate from counterparties.first_seen.auto_allow_below_usdc on
+  # purpose — a first_seen hold only fires *above* that number, so reusing
+  # it here would make every first_seen hold unapprovable. Omit to default
+  # to 5x the first_seen ceiling.
+  auto_approve_below_usdc: 0.01

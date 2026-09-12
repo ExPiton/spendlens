@@ -1,7 +1,7 @@
 import { PolicyConfig, toPolicyConfig, PolicyFileSchema, type AuthorizationRecord } from "@/lib/contracts";
 import { classifyQuality } from "@/lib/engine/classifyQuality";
 import { PolicyEngine } from "./policy-engine";
-import { AsyncLedgerQueue, type LedgerSink } from "./queue";
+import { AsyncLedgerQueue, registerAutoDrain, type LedgerSink } from "./queue";
 import { PolicyBlocked } from "./errors";
 import { PERMISSIVE_POLICY } from "./guard";
 import { load } from "js-yaml";
@@ -121,6 +121,10 @@ export interface GuardedGateway {
     },
   ): Promise<PayResult<T>>;
   engine: PolicyEngine;
+  /** Flushes buffered telemetry and stops the background timer — call
+   *  before a Ctrl+C or explicit `process.exit()`, which an automatic
+   *  `beforeExit` drain can't cover (see `registerAutoDrain`). */
+  drain(): Promise<void>;
 }
 
 function resolvePolicy(policy: GuardGatewayOptions["policy"]): PolicyConfig {
@@ -209,10 +213,34 @@ async function askEscalationWebhook(
   }
 }
 
+// `client.onBeforePaymentCreation` is an additive hook registry on the
+// GatewayClient itself, not something guardGateway owns exclusively — the
+// real Circle SDK runs every registered hook for every payment, regardless
+// of which guardGateway() call made it. Wrapping the same client a second
+// time doesn't create an independent policy scope: BOTH policies end up
+// gating BOTH agents' payments, and the second wrapper's telemetry queue
+// silently receives records that belong to the first agent. That's a
+// silent correctness bug (wrong blocks, wrong ledger attribution) with no
+// error to notice it by — turn it into a loud one at setup time instead.
+const wrappedClients = new WeakSet<GatewayClientLike>();
+
 export function guardGateway(
   client: GatewayClientLike,
   options: GuardGatewayOptions,
 ): GuardedGateway {
+  if (wrappedClients.has(client)) {
+    throw new Error(
+      "guardGateway: this GatewayClient is already wrapped by another " +
+        "guardGateway() call. Circle's onBeforePaymentCreation hook is " +
+        "shared by the whole client, so a second wrap doesn't get its own " +
+        "policy — both policies end up applying to both agents' payments. " +
+        "Construct a separate GatewayClient per agent instead (the same " +
+        "privateKey is fine to reuse across them — it's cheap, no on-chain " +
+        "cost to create the client object itself).",
+    );
+  }
+  wrappedClients.add(client);
+
   const engine = new PolicyEngine(resolvePolicy(options.policy));
   const sink = resolveSink(options.sink);
   const apiKey = options.apiKey ?? envVal("SPENDLENS_API_KEY");
@@ -221,8 +249,14 @@ export function guardGateway(
         headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined,
       })
     : undefined;
+  if (queue) registerAutoDrain(queue);
 
-  // pay() is 1:1 with a before-hook invocation, so a single-slot handoff is safe.
+  // pay() is 1:1 with a before-hook invocation, so a single-slot handoff is
+  // safe *as long as calls are serialized* — `fetchImpl` below enforces
+  // that with a mutex, since `client.onBeforePaymentCreation` is registered
+  // once for the whole client and has no per-call id to correlate against.
+  // Without serialization, two concurrent `fetch()` calls could interleave
+  // their hook invocations and each read back the OTHER call's verdict.
   type PendingState = {
     verdict: Awaited<ReturnType<PolicyEngine["evaluate"]>>;
     counterparty: string;
@@ -231,6 +265,14 @@ export function guardGateway(
     blocked: boolean;
   };
   let pending: PendingState | null = null;
+  // Set by fetchImpl immediately before `client.pay()`, read by the hook.
+  // Safe only under the same serialization guarantee as `pending`.
+  let currentTaskId: string | null = null;
+  // Same pattern, for when `paymentRequired.resource?.url` comes back empty
+  // (the real Circle client doesn't always populate it) — falls back to the
+  // URL this call was actually made with, so a blocked/held record's
+  // `resource` field isn't silently blank.
+  let currentUrl: string | null = null;
 
   const record = (
     partial: Partial<AuthorizationRecord> &
@@ -261,9 +303,11 @@ export function guardGateway(
   client.onBeforePaymentCreation(async ({ paymentRequired, selectedRequirements }) => {
     const counterparty = selectedRequirements.payTo;
     const amountMicroUsdc = Math.round(Number(selectedRequirements.amount));
-    const resource = paymentRequired.resource?.url ?? "";
+    const resource = paymentRequired.resource?.url || currentUrl || "";
+    const taskId = currentTaskId;
     const verdict = await engine.evaluate({
       agentId: options.agentId,
+      taskId,
       counterparty,
       amount: amountMicroUsdc / 1_000_000,
       resource,
@@ -275,7 +319,7 @@ export function guardGateway(
       pending.blocked = true;
       record(
         { counterparty, resource, amountMicroUsdc, decision: "block", ruleHit: verdict.ruleHit },
-        null,
+        taskId,
       );
       return { abort: true, reason: verdict.ruleHit ?? "policy.block" };
     }
@@ -306,12 +350,17 @@ export function guardGateway(
             decision: "hold_denied",
             ruleHit: verdict.ruleHit,
           },
-          null,
+          taskId,
         );
         return { abort: true, reason: verdict.ruleHit ?? "policy.hold_denied" };
       }
     }
   });
+
+  // Serializes fetchImpl invocations on this instance so the single-slot
+  // `pending`/`currentTaskId` handoff with the hook above stays correct —
+  // see the comment on `pending`'s declaration.
+  let mutex: Promise<unknown> = Promise.resolve();
 
   async function fetchImpl<T>(
     url: string,
@@ -322,8 +371,29 @@ export function guardGateway(
       headers?: Record<string, string>;
     },
   ): Promise<PayResult<T>> {
+    const run = mutex.then(() => runFetch<T>(url, opts));
+    // Chain onto the settled promise (not the original) regardless of
+    // outcome, so one failed call doesn't wedge every call queued after it.
+    mutex = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  async function runFetch<T>(
+    url: string,
+    opts?: {
+      taskId?: string;
+      method?: "GET" | "POST" | "PUT" | "DELETE";
+      body?: unknown;
+      headers?: Record<string, string>;
+    },
+  ): Promise<PayResult<T>> {
     const taskId = opts?.taskId ?? null;
     pending = null;
+    currentTaskId = taskId;
+    currentUrl = url;
     const t0 = Date.now();
 
     let res: PayResult<T> | undefined;
@@ -360,6 +430,29 @@ export function guardGateway(
     // degradation" case: paid, got nothing usable.
     const settledButUnparseable =
       Boolean(error) && error instanceof SyntaxError;
+
+    // client.pay() itself already read the settlement id off the
+    // PAYMENT-RESPONSE header before throwing — but it's a local inside
+    // Circle's own pay(), never returned to us alongside the thrown error,
+    // so it's gone from here. Best-effort recovery: ask Gateway directly for
+    // this counterparty's most recent transfer. It can still come back
+    // empty if the batch hasn't posted yet — that's the one gap this can't
+    // close — but it beats leaving every quality:empty record permanently
+    // unmatched when the settlement is sitting right there in Gateway.
+    let recoveredSettlementId: string | null = null;
+    if (settledButUnparseable && client.address && client.searchTransfers) {
+      try {
+        const { transfers } = await client.searchTransfers({
+          from: client.address,
+          to: p.counterparty,
+          pageSize: 1,
+        });
+        recoveredSettlementId = transfers[0]?.id ?? null;
+      } catch {
+        // best-effort only
+      }
+    }
+
     const bodyText =
       res && typeof res.data === "string"
         ? res.data
@@ -390,7 +483,7 @@ export function guardGateway(
         bodyBytes,
         bodySha256: bodyText ? await sha256Hex(bodyText) : null,
         quality,
-        settlementId: res?.transaction ?? null,
+        settlementId: res?.transaction || recoveredSettlementId,
       },
       taskId,
     );
@@ -407,7 +500,7 @@ export function guardGateway(
     }) as PayResult<T>;
   }
 
-  return { fetch: fetchImpl, engine };
+  return { fetch: fetchImpl, engine, drain: () => queue?.drainAndStop() ?? Promise.resolve() };
 }
 
 // ── reconcileFromGateway ────────────────────────────────────────────────────
@@ -434,8 +527,13 @@ export async function reconcileFromGateway(
   const from = opts?.fromAddress ?? client.address;
   const byCp = new Map<string, { micro: number; lastId: string }>();
   let pageAfter: string | undefined;
+  // A page cursor that stops advancing (a bug on the API side, or one that
+  // hands back the same token) would otherwise spin this forever. 10,000
+  // pages of 100 is 1M transfers — far beyond anything this reconciliation
+  // pass is meant to process in one call.
+  const MAX_PAGES = 10_000;
 
-  do {
+  for (let page = 0; page < MAX_PAGES; page++) {
     const { transfers, pagination } = await client.searchTransfers({
       from,
       startDate: opts?.since?.toISOString(),
@@ -451,8 +549,9 @@ export async function reconcileFromGateway(
       cur.lastId = t.id;
       byCp.set(t.toAddress, cur);
     }
-    pageAfter = pagination?.pageAfter;
-  } while (pageAfter);
+    if (!pagination?.pageAfter || pagination.pageAfter === pageAfter) break;
+    pageAfter = pagination.pageAfter;
+  }
 
   return [...byCp].map(([counterparty, v]) => ({
     counterparty,

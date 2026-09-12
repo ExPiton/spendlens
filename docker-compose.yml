@@ -4,7 +4,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-spendlens}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-spendlens}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: ${POSTGRES_DB:-spendlens}
     volumes:
       - db-data:/var/lib/postgresql/data
@@ -13,9 +13,11 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
-    # Exposed on the host only for convenience (psql, drizzle-kit studio).
+    # Bound to loopback only — reachable for local psql/drizzle-kit studio,
+    # never from outside the host. The `web` container reaches it over the
+    # internal compose network regardless of this mapping.
     ports:
-      - "${DB_HOST_PORT:-5432}:5432"
+      - "127.0.0.1:${DB_HOST_PORT:-5432}:5432"
 
   web:
     build:
@@ -43,8 +45,9 @@ services:
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASS: ${SMTP_PASS:-}
       SMTP_SECURE: ${SMTP_SECURE:-false}
-    ports:
-      - "${WEB_HOST_PORT:-3000}:3000"
+    # No host port published — reachable only from other containers on the
+    # compose network (i.e. caddy). Use docker-compose.override.yml to add
+    # a `ports: ["3000:3000"]` mapping for local dev without a proxy in front.
     healthcheck:
       # Node is in the runner image; curl/wget are not.
       test:
@@ -59,5 +62,25 @@ services:
       retries: 5
       start_period: 30s
 
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - web
+    environment:
+      # Reverse-proxy target + auto-HTTPS domain (or ":80" to serve plain
+      # HTTP on an IP with no domain — Caddy can't get a cert for a bare IP).
+      SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
 volumes:
   db-data:
+  caddy-data:
+  caddy-config:

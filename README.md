@@ -2,7 +2,6 @@
 
 > **An oversight and observability layer for AI agent spend on Arc.**
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Arc Ready](https://img.shields.io/badge/Arc-EVM%20Compatible-blue)](https://developers.circle.com)
 [![TypeScript](https://img.shields.io/badge/TypeScript-Strict-blue)](https://www.typescriptlang.org/)
 [![Tests](https://img.shields.io/badge/Tests-Passing-brightgreen)](https://github.com)
@@ -175,6 +174,7 @@ escalation:
   webhook: "https://ops.example.io/hooks/spendlens"
   timeout_seconds: 30
   on_timeout: block
+  auto_approve_below_usdc: 0.01   # optional — defaults to 5x first_seen's ceiling
 ```
 
 ### Step 5: Wire a real agent
@@ -369,4 +369,5 @@ Required environment variables: `APP_URL`, `NEXT_PUBLIC_APP_URL`,
 
 ## License
 
-This project is available under the [MIT License](LICENSE).
+Proprietary — all rights reserved. No license is granted to copy, modify, or
+redistribute this code without permission.

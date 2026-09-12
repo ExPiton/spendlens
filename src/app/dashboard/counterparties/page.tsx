@@ -5,7 +5,7 @@ import { NoAgents } from "@/components/dashboard/EmptyState";
 import { AgentSwitcher } from "@/components/dashboard/AgentSwitcher";
 import { Table, Thead, Tbody, Tr, Th, Td } from "@/components/ui/Table";
 import { MonoNumber } from "@/components/ui/MonoNumber";
-import { formatUsdcTotal, formatPercent, formatCount, formatDateTime, formatCounterparty } from "@/lib/format";
+import { formatUsdcPrecise, formatPercent, formatCount, formatDateTime, formatCounterparty } from "@/lib/format";
 
 interface CounterpartiesPageProps {
   searchParams: Promise<{ agentId?: string }>;
@@ -75,7 +75,7 @@ export default async function CounterpartiesPage(props: CounterpartiesPageProps)
                       {formatCounterparty(cp.counterparty)}
                     </Td>
                     <Td align="right">
-                      <MonoNumber className="font-semibold">{formatUsdcTotal(cp.totalSpendMicroUsdc)} $</MonoNumber>
+                      <MonoNumber className="font-semibold">{formatUsdcPrecise(cp.totalSpendMicroUsdc)} USDC</MonoNumber>
                     </Td>
                     <Td align="right">
                       <MonoNumber>{formatCount(cp.callCount)}</MonoNumber>

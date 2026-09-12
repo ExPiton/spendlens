@@ -29,12 +29,11 @@ export function Hero() {
           </LinkButton>
         </div>
 
-        <dl className="mt-16 grid max-w-2xl grid-cols-2 gap-x-8 gap-y-6 border-t border-border pt-8 sm:grid-cols-4">
+        <dl className="mt-16 grid max-w-2xl grid-cols-2 gap-x-8 gap-y-6 border-t border-border pt-8 sm:grid-cols-3">
           {[
             ["0.000001 USDC", "smallest supported payment"],
             ["3 classes", "of reconciliation mismatch"],
             ["5 components", "interception to reconciliation"],
-            ["MIT", "license"],
           ].map(([value, label]) => (
             <div key={label}>
               <dt className="font-mono text-lg tabular">{value}</dt>

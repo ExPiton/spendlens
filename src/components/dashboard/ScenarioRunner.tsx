@@ -28,7 +28,7 @@ interface ScenarioResult {
   }>;
 }
 
-export function ScenarioRunner({ agentId = "research-crawler-01" }: { agentId?: string }) {
+export function ScenarioRunner({ agentId }: { agentId: string }) {
   const [runningScenario, setRunningScenario] = useState<string | null>(null);
   const [result, setResult] = useState<ScenarioResult | null>(null);
 
@@ -79,7 +79,7 @@ export function ScenarioRunner({ agentId = "research-crawler-01" }: { agentId?: 
             </div>
             <h4 className="mt-2 text-sm font-semibold">Prompt injection redirect</h4>
             <p className="mt-1 text-xs text-muted">
-              4,000 rapid micro-calls to an attacker-controlled address. No single call exceeds the per-call limit, but the budget and unauthorized-address checks catch it.
+              25 rapid micro-calls to an attacker-controlled address. No single call exceeds the per-call limit, but the budget and unauthorized-address checks catch it.
             </p>
           </div>
           <div className="mt-4 pt-3 border-t border-border/50">

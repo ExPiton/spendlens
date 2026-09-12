@@ -11,9 +11,7 @@ export async function GET(request: NextRequest) {
     const agentId = searchParams.get("agentId") || ALL_AGENTS;
     return NextResponse.json(await getOverviewStats(auth.userId, agentId));
   } catch (err) {
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Internal Server Error" },
-      { status: 500 },
-    );
+    console.error("[spendlens] GET /api/stats failed:", err);
+    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }

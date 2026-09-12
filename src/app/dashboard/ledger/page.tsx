@@ -2,6 +2,7 @@ import { listAuthorizations, listAgentOptions, ALL_AGENTS } from "@/lib/db/repos
 import { requireVerifiedUser } from "@/lib/auth/dal";
 import { InteractiveDecisionsTable } from "@/components/dashboard/InteractiveDecisionsTable";
 import { AgentSwitcher } from "@/components/dashboard/AgentSwitcher";
+import { LedgerSearchBox } from "@/components/dashboard/LedgerSearchBox";
 import { NoAgents } from "@/components/dashboard/EmptyState";
 import type { Decision, Quality } from "@/lib/contracts";
 import Link from "next/link";
@@ -144,6 +145,8 @@ export default async function LedgerPage(props: LedgerPageProps) {
             })}
           </div>
         </div>
+
+        <LedgerSearchBox initialValue={search ?? ""} />
 
         <div className="ml-auto text-muted font-mono">
           Found <span className="text-fg font-semibold">{data.total}</span> records total

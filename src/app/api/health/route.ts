@@ -13,19 +13,22 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   const startedAt = Date.now();
   let dbOk = false;
-  let dbError: string | undefined;
 
   try {
     await db.execute(sql`select 1`);
     dbOk = true;
   } catch (err) {
-    dbError = err instanceof Error ? err.message : String(err);
+    // This endpoint is unauthenticated by design (load balancers, uptime
+    // checks). The raw driver error can carry host/port/db-name/schema
+    // detail — real information disclosure to anyone on the internet who
+    // hits it, not just an operator watching a dashboard. Log it
+    // server-side instead; the public body only ever says "down".
+    console.error("[spendlens] /api/health DB check failed:", err);
   }
 
   const body = {
     status: dbOk ? "ok" : "degraded",
     db: dbOk ? "up" : "down",
-    ...(dbError ? { dbError } : {}),
     uptimeSeconds: Math.round(process.uptime()),
     latencyMs: Date.now() - startedAt,
     ts: new Date().toISOString(),

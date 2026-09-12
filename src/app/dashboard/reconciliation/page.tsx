@@ -2,6 +2,7 @@ import { listReconciliation, getLedgerPeriod } from "@/lib/db/repository";
 import { requireVerifiedUser } from "@/lib/auth/dal";
 import { NoAgents } from "@/components/dashboard/EmptyState";
 import { RescanButton } from "@/components/dashboard/RescanButton";
+import { HaltAffectedAgentsButton } from "@/components/dashboard/HaltAffectedAgentsButton";
 import { Table, Thead, Tbody, Tr, Th, Td } from "@/components/ui/Table";
 import { MonoNumber } from "@/components/ui/MonoNumber";
 import { StatusInline, StatusDot } from "@/components/ui/StatusPill";
@@ -62,9 +63,9 @@ export default async function ReconciliationPage() {
                 </p>
               </div>
             </div>
-            <button className="shrink-0 rounded-xs bg-critical px-4 py-2 text-xs font-bold text-paper transition-slens hover:opacity-90">
-              Halt Affected Agents
-            </button>
+            <HaltAffectedAgentsButton
+              counterparties={criticalRecords.map((r) => r.counterparty)}
+            />
           </div>
         </div>
       )}

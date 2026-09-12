@@ -27,12 +27,15 @@ export async function GET(request: NextRequest) {
     };
     return NextResponse.json(await listAuthorizations(auth.userId, filters));
   } catch (err) {
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Internal Server Error" },
-      { status: 500 },
-    );
+    console.error("[spendlens] GET /api/authorizations failed:", err);
+    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }
+
+// Well above anything the SDK's own queue sends in one flush (batchSize:
+// 100) — just a backstop against a pathological or hostile caller forcing
+// a single request to validate/insert millions of rows.
+const MAX_BATCH_SIZE = 1000;
 
 /** SDK ingest — API-key authenticated. Body is `{ records: [...] }` or a single
  *  record. The key's agent is authoritative; a paused agent is rejected. */
@@ -64,6 +67,13 @@ export async function POST(request: NextRequest) {
         ? body
         : [body];
 
+    if (records.length > MAX_BATCH_SIZE) {
+      return NextResponse.json(
+        { error: `Batch too large: ${records.length} records (max ${MAX_BATCH_SIZE})` },
+        { status: 413 },
+      );
+    }
+
     const result = await insertAuthorizations(
       { userId: key.userId, agentId: agent.id, agentSlug: agent.slug },
       records,
@@ -73,9 +83,10 @@ export async function POST(request: NextRequest) {
       { headers: limited.headers },
     );
   } catch (err) {
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Invalid authorization record" },
-      { status: 400 },
-    );
+    // Logged server-side for operators; the client gets a generic message
+    // so a Postgres/driver error never hands back schema or connection
+    // details to whoever holds the API key.
+    console.error("[spendlens] POST /api/authorizations failed:", err);
+    return NextResponse.json({ error: "Invalid request" }, { status: 400 });
   }
 }

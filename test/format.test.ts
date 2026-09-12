@@ -17,7 +17,7 @@ describe("Time/period formatting is pinned to UTC, not the runtime's local zone"
       "2026-08-01T00:00:00.000+03:00",
       "2026-08-13T00:00:00.000+03:00",
     );
-    assert.equal(label, "Aug 1 – 12, 2026");
+    assert.equal(label, "Aug 1 – 12, 2026 UTC");
   });
 
   test("formatPeriod spans a month boundary correctly", () => {
@@ -25,7 +25,20 @@ describe("Time/period formatting is pinned to UTC, not the runtime's local zone"
       "2026-07-28T00:00:00.000+03:00",
       "2026-08-02T00:00:00.000+03:00",
     );
-    assert.equal(label, "Jul 28 – Aug 1, 2026");
+    assert.equal(label, "Jul 28 – Aug 1, 2026 UTC");
+  });
+
+  test("REGRESSION: a same-day, non-midnight end boundary doesn't roll back an extra day", () => {
+    // getLedgerPeriod's real contract is `end = max(ts) + 1ms` — almost
+    // never a midnight boundary. Stepping back a full calendar day
+    // regardless of the actual time-of-day (what an earlier version did)
+    // rolls a same-day end boundary back into the PRIOR day, rendering an
+    // inverted-looking range like "Sep 12 – 11" for data that's all on Sep 12.
+    const label = formatPeriod(
+      "2026-09-12T01:19:28.178Z",
+      "2026-09-12T01:19:32.864Z", // max(ts) + 1ms, same calendar day as start
+    );
+    assert.equal(label, "Sep 12 – 12, 2026 UTC");
   });
 
   test("formatTime renders the instant in UTC regardless of process.env.TZ", () => {

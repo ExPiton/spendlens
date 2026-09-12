@@ -71,6 +71,15 @@ export const PolicyFileSchema = z.object({
     webhook: z.string().url(),
     timeout_seconds: z.number().int().positive(),
     on_timeout: PolicyActionSchema,
+    // Ceiling under which Spendlens's own /api/escalate auto-approves a
+    // `hold`. Deliberately separate from counterparties.first_seen's own
+    // auto_allow_below_usdc: that threshold gates whether a hold fires at
+    // all (a first-seen call at or under it skips hold entirely, so by the
+    // time /api/escalate is asked about a first_seen hold the amount is
+    // *always* above that ceiling) — reusing the same number here would
+    // make every hold unapprovable by construction. Optional; defaults to
+    // 5x first_seen.auto_allow_below_usdc when omitted.
+    auto_approve_below_usdc: z.number().nonnegative().optional(),
   }),
 });
 export type PolicyFile = z.infer<typeof PolicyFileSchema>;
@@ -106,6 +115,7 @@ export interface PolicyConfig {
     webhook: string;
     timeoutSeconds: number;
     onTimeout: PolicyAction;
+    autoApproveBelowUsdc?: number;
   };
 }
 
@@ -153,6 +163,7 @@ export function toPolicyConfig(file: PolicyFile): PolicyConfig {
       webhook: file.escalation.webhook,
       timeoutSeconds: file.escalation.timeout_seconds,
       onTimeout: file.escalation.on_timeout,
+      autoApproveBelowUsdc: file.escalation.auto_approve_below_usdc,
     },
   };
 }

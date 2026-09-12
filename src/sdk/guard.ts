@@ -2,7 +2,7 @@ import { PolicyConfig, toPolicyConfig, PolicyFileSchema, type AuthorizationRecor
 import { classifyQuality } from "@/lib/engine/classifyQuality";
 import { PolicyEngine } from "./policy-engine";
 import { parsePaymentChallenge, type PaymentChallenge } from "./challenge";
-import { AsyncLedgerQueue, type LedgerSink } from "./queue";
+import { AsyncLedgerQueue, registerAutoDrain, type LedgerSink } from "./queue";
 import { PolicyBlocked, EscalationDenied } from "./errors";
 import { load } from "js-yaml";
 
@@ -99,21 +99,21 @@ export interface GuardedRequestInit extends RequestInit {
   taskId?: string;
 }
 
+/** Real SHA-256 when `crypto.subtle` is available, `""` otherwise — never a
+ *  fabricated stand-in. A fake hash padded out to look like a real sha256
+ *  is worse than an honest empty string: it can pass a casual "looks like a
+ *  hash" check while silently not being the actual audit-trail digest of
+ *  the response body, exactly where quality/reconciliation auditing needs
+ *  it to be trustworthy. `guardGateway`'s `sha256Hex` already returns ""
+ *  in this case; this matches it instead of disagreeing. */
 async function computeSha256(text: string): Promise<string> {
-  if (typeof globalThis.crypto !== "undefined" && globalThis.crypto.subtle) {
-    const msgBuffer = new TextEncoder().encode(text);
-    const hashBuffer = await globalThis.crypto.subtle.digest("SHA-256", msgBuffer);
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
+  if (typeof globalThis.crypto === "undefined" || !globalThis.crypto.subtle) {
+    return "";
   }
-  // Fallback simple hash for older environments
-  let hash = 0;
-  for (let i = 0; i < text.length; i++) {
-    const char = text.charCodeAt(i);
-    hash = (hash << 5) - hash + char;
-    hash |= 0;
-  }
-  return Math.abs(hash).toString(16).padStart(64, "0");
+  const msgBuffer = new TextEncoder().encode(text);
+  const hashBuffer = await globalThis.crypto.subtle.digest("SHA-256", msgBuffer);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 function generateId(): string {
@@ -127,6 +127,7 @@ export class SpendlensGuard {
   private signer?: SignerFn;
   private customFetch: typeof fetch;
   private escalationHandler?: (challenge: PaymentChallenge, ruleHit: string | null) => Promise<boolean>;
+  private apiKey?: string;
 
   constructor(options: GuardOptions) {
     this.agentId = options.agentId;
@@ -152,16 +153,28 @@ export class SpendlensGuard {
     this.policyEngine = new PolicyEngine(config);
 
     const sink = resolveSink(options.sink);
-    const apiKey = options.apiKey ?? envValue("SPENDLENS_API_KEY");
+    this.apiKey = options.apiKey ?? envValue("SPENDLENS_API_KEY");
     if (sink) {
       this.queue = new AsyncLedgerQueue(sink, {
-        headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined,
+        headers: this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : undefined,
       });
+      registerAutoDrain(this.queue);
     }
   }
 
   public getEngine(): PolicyEngine {
     return this.policyEngine;
+  }
+
+  /** Flushes any buffered telemetry and stops the background timer. Call
+   *  this before your process exits (a short-lived script or CLI agent, the
+   *  most common case) — without it, whatever is still sitting in the
+   *  queue's debounce window (up to `flushIntervalMs`, including any
+   *  `block`/`hold_denied` records from calls that just finished) is lost
+   *  silently, since the timer is unref'd specifically so it never keeps a
+   *  process alive on its own. */
+  public async drain(): Promise<void> {
+    await this.queue?.drainAndStop();
   }
 
   public setQueue(queue: AsyncLedgerQueue): void {
@@ -177,8 +190,22 @@ export class SpendlensGuard {
     const nowIso = new Date().toISOString();
     const nowMs = Date.now();
 
+    // x402 is a challenge-response protocol: this request may need to go
+    // out twice — once to discover whether payment is required (the probe
+    // below), and again with a payment header once it is (step 6). A
+    // ReadableStream body can only be read once, so the probe would
+    // silently consume it and leave the paid retry with nothing to send;
+    // buffer it up front so both attempts get their own independent copy.
+    // Anything else (string, Blob, ArrayBuffer, URLSearchParams, a plain
+    // FormData) is already safe to reuse as-is.
+    let requestInit = init;
+    if (init?.body instanceof ReadableStream) {
+      const buffered = await new Response(init.body).arrayBuffer();
+      requestInit = { ...init, body: buffered };
+    }
+
     // Step 1: Initial probe request
-    const probe = await this.customFetch(input, init);
+    const probe = await this.customFetch(input, requestInit);
 
     // If not a 402, pass straight through
     if (probe.status !== 402) {
@@ -250,7 +277,14 @@ export class SpendlensGuard {
           const timeout = setTimeout(() => controller.abort(), verdict.escalation.timeoutSeconds * 1000);
           const escRes = await this.customFetch(verdict.escalation.webhook, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: {
+              "Content-Type": "application/json",
+              // Spendlens's own /api/escalate requires this — without it
+              // every hold silently resolves to "denied" (a 401 response
+              // is not `.ok`, so `approved` stays false), which defeats
+              // the whole point of the escalation webhook.
+              ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
+            },
             body: JSON.stringify({
               agentId: this.agentId,
               taskId,
@@ -317,7 +351,7 @@ export class SpendlensGuard {
     }
 
     // Step 6: Send request with payment authorization header
-    const authHeaders = new Headers(init?.headers || {});
+    const authHeaders = new Headers(requestInit?.headers || {});
     authHeaders.set("Authorization", authorization.paymentHeader);
     authHeaders.set("X-Payment-Authorization", authorization.paymentHeader);
     if (authorization.nonce) {
@@ -330,7 +364,7 @@ export class SpendlensGuard {
 
     try {
       res = await this.customFetch(input, {
-        ...init,
+        ...requestInit,
         headers: authHeaders,
       });
     } catch {

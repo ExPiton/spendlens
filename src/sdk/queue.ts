@@ -1,5 +1,28 @@
 import type { AuthorizationRecord } from "@/lib/contracts";
 
+/**
+ * Best-effort auto-flush for the common "short-lived script" case: when the
+ * event loop naturally runs out of other work, drain whatever telemetry is
+ * still buffered before the process exits. Without this, a short-lived
+ * agent run (the typical use) can finish and exit with the last debounce
+ * window's worth of records — `block`/`hold_denied` decisions included —
+ * still sitting unsent in memory, since the flush timer is deliberately
+ * `unref()`'d so it never keeps the process alive on its own.
+ *
+ * `beforeExit` (unlike the synchronous `exit` event) still lets async code
+ * run, and can fire more than once — draining an already-empty queue is a
+ * no-op, so it's safe to leave registered for the life of the process. It
+ * does NOT cover Ctrl+C or an explicit `process.exit()`: Node gives no way
+ * to await async work on either of those paths, so code that must guarantee
+ * delivery there should still call `drainAndStop()` explicitly.
+ */
+export function registerAutoDrain(queue: AsyncLedgerQueue): void {
+  if (typeof process === "undefined" || typeof process.on !== "function") return;
+  process.on("beforeExit", () => {
+    void queue.drainAndStop();
+  });
+}
+
 export type LedgerSink =
   | string // DSN or API URL e.g. "http://localhost:3000/api/authorizations"
   | ((records: AuthorizationRecord[]) => Promise<void>)
@@ -107,13 +130,28 @@ export class AsyncLedgerQueue {
     }
   }
 
+  /** Flushes whatever is buffered and stops the periodic timer. Bounded to
+   *  a fixed number of attempts — a permanently unreachable sink makes
+   *  `flush()` re-queue the same batch every time (see the `catch` above),
+   *  which would otherwise spin this forever instead of letting whatever
+   *  is shutting the process down actually finish. */
   public async drainAndStop(): Promise<void> {
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
     }
-    while (this.buffer.length > 0) {
+    const maxAttempts = 5;
+    for (let attempt = 0; attempt < maxAttempts && this.buffer.length > 0; attempt++) {
       await this.flush();
+    }
+    if (this.buffer.length > 0 && this.onError) {
+      this.onError(
+        new Error(
+          `Spendlens ledger queue: giving up after ${maxAttempts} failed flush attempts, ` +
+            `${this.buffer.length} record(s) undelivered`,
+        ),
+        this.buffer.length,
+      );
     }
   }
 }

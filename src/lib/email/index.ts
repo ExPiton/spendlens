@@ -73,22 +73,32 @@ async function sendViaSmtp(input: SendEmailInput): Promise<void> {
 
 /**
  * Sends a transactional e-mail via Resend or SMTP, whichever is configured.
- * With neither set, the message (and any action link) is logged to the server
- * console — enough to click through in local development.
+ *
+ * A provider failure throws — it must reach the caller (e.g. better-auth's
+ * `sendResetPassword`), so a broken mail integration surfaces as a failed
+ * request instead of a false "check your e-mail" success.
+ *
+ * With no provider configured at all: in development the message (and any
+ * action link) is logged to the console so the flow stays completable
+ * locally; in production this throws too, because silently dropping a
+ * password-reset or verification e-mail — while telling the user it was
+ * sent — permanently locks them out with no visible error anywhere.
  */
 export async function sendEmail(input: SendEmailInput): Promise<void> {
-  try {
-    if (process.env.RESEND_API_KEY) {
-      await sendViaResend(input, process.env.RESEND_API_KEY);
-      return;
-    }
-    if (process.env.SMTP_HOST) {
-      await sendViaSmtp(input);
-      return;
-    }
-  } catch (err) {
-    console.error("[spendlens] e-mail send failed:", err);
-    // fall through to console so the flow is still completable in dev
+  if (process.env.RESEND_API_KEY) {
+    await sendViaResend(input, process.env.RESEND_API_KEY);
+    return;
+  }
+  if (process.env.SMTP_HOST) {
+    await sendViaSmtp(input);
+    return;
+  }
+
+  if (process.env.NODE_ENV === "production") {
+    throw new Error(
+      `[spendlens] no e-mail provider configured (set RESEND_API_KEY or ` +
+        `SMTP_HOST) — refusing to silently drop "${input.subject}" to ${input.to}`,
+    );
   }
 
   console.warn(

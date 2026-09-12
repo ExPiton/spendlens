@@ -104,21 +104,32 @@ sayaç (Redis) koy.
 
 ---
 
-## 5. Önüne bir reverse proxy koy (HTTPS)
+## 5. HTTPS (Caddy dahil, otomatik)
 
-Next.js'i doğrudan internete açma. Örnek **Caddy** (otomatik HTTPS):
+`docker-compose.yml`'de bir `caddy` servisi var — `web`'in kendisi artık host'a
+port yayınlamıyor (yalnızca compose ağı üzerinden erişilebilir), 80/443'ü
+Caddy tutar ve `.env`'deki `SITE_ADDRESS` için otomatik Let's Encrypt
+sertifikası alır. Yapman gereken tek şey `.env`'de:
 
-```caddyfile
-spendlens.ornek.com {
-    reverse_proxy 127.0.0.1:3000
-}
+```bash
+SITE_ADDRESS=spendlens.ornek.com      # ya da geçici: <IP-tirelerle>.nip.io
+APP_URL=https://spendlens.ornek.com
+NEXT_PUBLIC_APP_URL=https://spendlens.ornek.com
 ```
 
-Nginx kullanıyorsan: `proxy_pass http://127.0.0.1:3000;` + `proxy_set_header
-Host $host;` ve `X-Forwarded-*` başlıkları + Let's Encrypt (certbot).
+Alan adın yoksa **`nip.io`** ile hemen gerçek HTTPS alabilirsin — sunucunun
+IP'si `37.60.245.238` ise `SITE_ADDRESS=37-60-245-238.nip.io` yaz, Caddy
+onun için de geçerli bir Let's Encrypt sertifikası alır (nip.io o alt alanı
+otomatik olarak IP'ye çözer). Sonra alan adın gelince `.env`'i güncelleyip
+`docker compose up -d` demen yeterli — Caddy yeni domain için otomatik yeni
+sertifika ister.
 
 `APP_URL` mutlaka `https://...` olmalı — oturum çerezleri `Secure` işaretli
-gönderilir.
+gönderilir; `http://` ile deploy edersen çerezler düz metin HTTP üzerinden
+gider.
+
+Firewall: sadece `22` (SSH), `80`, `443` açık kalmalı — `ufw allow 22,80,443/tcp`.
+DB (`5432`) ve `web` (`3000`) host'a hiç yayınlanmıyor, dışarıdan erişilemez.
 
 ---
 
@@ -225,6 +236,34 @@ Arc chain id'leri: **testnet 5042002**, **mainnet 5042**. Mainnet için
 | Migration'ı elle çalıştır | `docker compose exec web node -e "require('./server.js')"` yerine: yeni deploy'da otomatik. Yerelde: `npm run db:migrate` |
 | Durdur | `docker compose down` (veriler `db-data` volume'ünde kalır) |
 | Her şeyi sil | `docker compose down -v` (**veritabanı dahil siler**) |
+
+### Sunucu güvenliği (VPS'te bir kere yapılır)
+
+```bash
+# Parola ile SSH'ı kapat, sadece anahtar kabul et
+cat >/etc/ssh/sshd_config.d/00-hardening.conf <<'EOF'
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin prohibit-password
+EOF
+sshd -t && systemctl reload ssh
+
+# Brute-force koruması
+apt-get install -y fail2ban
+cat >/etc/fail2ban/jail.local <<'EOF'
+[sshd]
+enabled = true
+maxretry = 5
+bantime = 3600
+EOF
+systemctl enable --now fail2ban
+
+ufw allow 22/tcp && ufw allow 80/tcp && ufw allow 443/tcp && ufw --force enable
+```
+
+**Önce** anahtar tabanlı girişin çalıştığını doğrula (`ssh-copy-id`), **sonra**
+parola girişini kapat — yoksa kendini kilitleyebilirsin. `unattended-upgrades`
+Ubuntu'da varsayılan açık, güvenlik yamalarını otomatik indirir.
 
 ---
 

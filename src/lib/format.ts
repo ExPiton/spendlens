@@ -76,25 +76,31 @@ function isoDateParts(iso: string): { year: number; month: number; day: number }
 }
 
 /**
- * "Jan 1 – Jan 12, 2026" style period label. `endIso` is an *exclusive*
- * boundary (getPeriod()'s own contract — periods are filtered as
- * `[start, end)` everywhere else), so the label steps back one calendar day
- * to show the last day the data actually covers. Computed via Date.UTC as a
- * pure calendar calculator, never the runtime's local zone.
+ * "Jan 1 – Jan 12, 2026 UTC" style period label. `endIso` is an *exclusive*
+ * boundary (getLedgerPeriod's contract: the instant right after the last
+ * event, `max(ts) + 1ms` — NOT necessarily a midnight boundary). The label
+ * needs the calendar date of the last real event, so it steps back 1ms on
+ * the actual *timestamp* first and only then reads the calendar date off
+ * the result. Stepping back a whole calendar day instead (treating `end` as
+ * if it were always exactly midnight) undercounts by a full day whenever
+ * the last event isn't at midnight — which is every real dataset — and
+ * showed up as an inverted-looking range like "Sep 12 – 11". Computed via
+ * Date.UTC/getUTC* throughout as a pure calendar calculator, never the
+ * runtime's local zone.
  */
 export function formatPeriod(startIso: string, endIso: string): string {
   const s = isoDateParts(startIso);
-  const e = isoDateParts(endIso);
   const start = new Date(Date.UTC(s.year, s.month - 1, s.day));
-  const end = new Date(Date.UTC(e.year, e.month - 1, e.day) - 1); // step back into the prior (inclusive) calendar day
+  const end = new Date(new Date(endIso).getTime() - 1);
 
   const monthName = (d: Date) =>
     new Intl.DateTimeFormat("en-US", { month: "short", timeZone: "UTC" }).format(d);
 
-  if (start.getUTCFullYear() === end.getUTCFullYear() && start.getUTCMonth() === end.getUTCMonth()) {
-    return `${monthName(start)} ${start.getUTCDate()} – ${end.getUTCDate()}, ${end.getUTCFullYear()}`;
-  }
-  return `${monthName(start)} ${start.getUTCDate()} – ${monthName(end)} ${end.getUTCDate()}, ${end.getUTCFullYear()}`;
+  const range =
+    start.getUTCFullYear() === end.getUTCFullYear() && start.getUTCMonth() === end.getUTCMonth()
+      ? `${monthName(start)} ${start.getUTCDate()} – ${end.getUTCDate()}, ${end.getUTCFullYear()}`
+      : `${monthName(start)} ${start.getUTCDate()} – ${monthName(end)} ${end.getUTCDate()}, ${end.getUTCFullYear()}`;
+  return `${range} UTC`;
 }
 
 /** "0x8f3a…7f80" style truncation for on-chain addresses. */

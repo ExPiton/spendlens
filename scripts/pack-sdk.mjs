@@ -32,7 +32,7 @@ const pkg = {
     },
   },
   files: ["index.mjs", "index.js", "index.d.ts", "index.d.mts", "README.md"],
-  license: rootPkg.license || "MIT",
+  license: rootPkg.license || "UNLICENSED",
   dependencies: {
     ...pick("zod"),
     ...pick("js-yaml"),

@@ -1,6 +1,7 @@
 import {
   existsSync,
   readFileSync,
+  renameSync,
   writeFileSync,
 } from "node:fs";
 import type { PolicyConfig } from "@/lib/contracts";
@@ -30,6 +31,13 @@ export interface PolicyStateStore {
   getDaySpend(agentId: string, nowMs: number): number;
   getMinuteCallCount(agentId: string, nowMs: number): number;
   getNewCounterpartiesCountLastHour(agentId: string, nowMs: number): number;
+  /** Records first contact with a counterparty that was neither allowlisted
+   *  nor previously seen — the only thing `getNewCounterpartiesCountLastHour`
+   *  counts. Idempotent: calling it again for the same counterparty is a
+   *  no-op, so retries of a held/denied first contact don't reset its
+   *  first-seen clock. Never called for an allowlisted counterparty, so a
+   *  pre-trusted integration can never inflate this signal. */
+  recordFirstContact(agentId: string, counterparty: string, nowMs: number): void;
   isCounterpartySeen(agentId: string, counterparty: string): boolean;
   getTotalAuthorizationsCount(agentId: string): number;
   getFirstActivityTimestamp(agentId: string): number | null;
@@ -41,7 +49,8 @@ export interface PolicyStateStore {
 interface SerializedPolicyState {
   taskSpends: Record<string, number>;
   callTimestamps: { agentId: string; ts: number; amount: number; counterparty: string }[];
-  seenCounterparties: string[];
+  seenCounterparties: Record<string, number>;
+  firstContacts: Record<string, number>;
   firstActivity: Record<string, number>;
   totalCalls: Record<string, number>;
   ewmaStates: Record<string, EwmaState>;
@@ -50,7 +59,16 @@ interface SerializedPolicyState {
 export class InMemoryPolicyStateStore implements PolicyStateStore {
   protected taskSpends = new Map<string, number>();
   protected callTimestamps: { agentId: string; ts: number; amount: number; counterparty: string }[] = [];
-  protected seenCounterparties = new Set<string>();
+  /** `${agentId}:${counterparty}` -> timestamp of the first *allowed* call.
+   *  General "have we ever let this counterparty through" memory — used to
+   *  skip re-vetting an already-trusted relationship. */
+  protected seenCounterparties = new Map<string, number>();
+  /** `${agentId}:${counterparty}` -> timestamp of first contact with a
+   *  counterparty that was neither allowlisted nor already seen. Separate
+   *  from `seenCounterparties` specifically so an allowlisted counterparty's
+   *  first call never counts as "new" for the new-counterparty-rate signal —
+   *  it was already trusted, not a surprise. */
+  protected firstContacts = new Map<string, number>();
   protected firstActivityMap = new Map<string, number>();
   protected totalCallsMap = new Map<string, number>();
   protected ewmaStates = new Map<string, EwmaState>();
@@ -62,7 +80,8 @@ export class InMemoryPolicyStateStore implements PolicyStateStore {
     return {
       taskSpends: Object.fromEntries(this.taskSpends),
       callTimestamps: this.callTimestamps.filter((c) => c.ts >= cutoff),
-      seenCounterparties: [...this.seenCounterparties],
+      seenCounterparties: Object.fromEntries(this.seenCounterparties),
+      firstContacts: Object.fromEntries(this.firstContacts),
       firstActivity: Object.fromEntries(this.firstActivityMap),
       totalCalls: Object.fromEntries(this.totalCallsMap),
       ewmaStates: Object.fromEntries(this.ewmaStates),
@@ -73,7 +92,14 @@ export class InMemoryPolicyStateStore implements PolicyStateStore {
     if (!s) return;
     this.taskSpends = new Map(Object.entries(s.taskSpends ?? {}));
     this.callTimestamps = s.callTimestamps ?? [];
-    this.seenCounterparties = new Set(s.seenCounterparties ?? []);
+    // Back-compat: an older snapshot stored seenCounterparties as a plain
+    // string[] with no timestamp. Restoring those as "seen at epoch 0" is
+    // safe — it only affects whether they're still within the (long past)
+    // new-counterparty-rate window, i.e. never.
+    this.seenCounterparties = Array.isArray(s.seenCounterparties)
+      ? new Map((s.seenCounterparties as unknown as string[]).map((k) => [k, 0]))
+      : new Map(Object.entries(s.seenCounterparties ?? {}));
+    this.firstContacts = new Map(Object.entries(s.firstContacts ?? {}));
     this.firstActivityMap = new Map(Object.entries(s.firstActivity ?? {}));
     this.totalCallsMap = new Map(Object.entries(s.totalCalls ?? {}));
     this.ewmaStates = new Map(Object.entries(s.ewmaStates ?? {}));
@@ -107,8 +133,20 @@ export class InMemoryPolicyStateStore implements PolicyStateStore {
 
   getNewCounterpartiesCountLastHour(agentId: string, nowMs: number): number {
     const oneHourAgo = nowMs - 60 * 60 * 1000;
-    const recent = this.callTimestamps.filter((c) => c.agentId === agentId && c.ts >= oneHourAgo);
-    return new Set(recent.map((c) => c.counterparty)).size;
+    const prefix = `${agentId}:`;
+    let count = 0;
+    for (const [key, firstContactTs] of this.firstContacts) {
+      if (key.startsWith(prefix) && firstContactTs >= oneHourAgo) count++;
+    }
+    return count;
+  }
+
+  recordFirstContact(agentId: string, counterparty: string, nowMs: number): void {
+    const key = `${agentId}:${counterparty}`;
+    if (!this.firstContacts.has(key)) {
+      this.firstContacts.set(key, nowMs);
+      this.onMutate();
+    }
   }
 
   isCounterpartySeen(agentId: string, counterparty: string): boolean {
@@ -142,7 +180,10 @@ export class InMemoryPolicyStateStore implements PolicyStateStore {
     this.totalCallsMap.set(agentId, (this.totalCallsMap.get(agentId) || 0) + 1);
 
     if (verdict.decision === "allow") {
-      this.seenCounterparties.add(`${agentId}:${input.counterparty}`);
+      const seenKey = `${agentId}:${input.counterparty}`;
+      if (!this.seenCounterparties.has(seenKey)) {
+        this.seenCounterparties.set(seenKey, now);
+      }
       if (input.taskId) {
         const key = `${agentId}:${input.taskId}`;
         this.taskSpends.set(key, (this.taskSpends.get(key) || 0) + input.amount);
@@ -153,8 +194,22 @@ export class InMemoryPolicyStateStore implements PolicyStateStore {
         amount: input.amount,
         counterparty: input.counterparty,
       });
+      this.pruneOldCallTimestamps(now);
     }
     this.onMutate();
+  }
+
+  /** Drops call-timestamp entries older than the day-spend window (with a
+   *  1h safety margin) so a long-running agent's in-memory history doesn't
+   *  grow without bound — `getDaySpend` and friends never read past 24h
+   *  anyway. Only scans+filters when the oldest entry is actually stale,
+   *  since entries arrive in roughly chronological order and this runs on
+   *  every allowed call. */
+  private pruneOldCallTimestamps(nowMs: number): void {
+    const cutoff = nowMs - 25 * 60 * 60 * 1000;
+    if (this.callTimestamps.length > 0 && this.callTimestamps[0].ts < cutoff) {
+      this.callTimestamps = this.callTimestamps.filter((c) => c.ts >= cutoff);
+    }
   }
 }
 
@@ -168,8 +223,14 @@ export class InMemoryPolicyStateStore implements PolicyStateStore {
  *   import { FilePolicyStateStore, PolicyEngine } from "@spendlens/sdk";
  *   const engine = new PolicyEngine(policy, new FilePolicyStateStore(".spendlens-state.json"));
  *
- * Writes are debounced (default 1s) and flushed on `process.exit` / SIGINT /
- * SIGTERM. Single-process only — concurrent writers would clobber each other.
+ * Writes are debounced (default 1s) and flushed on the Node `'exit'` event —
+ * which fires on a normal exit *and* on the default (unhandled) disposition
+ * of SIGINT/SIGTERM, so a plain `Ctrl+C` is covered without this class
+ * installing its own signal handlers. It deliberately never calls
+ * `process.exit()` itself: a library forcing process termination could cut
+ * off a host application's own shutdown sequence (other 'exit'/SIGINT
+ * listeners, in-flight requests) if this one happened to run first.
+ * Single-process only — concurrent writers would clobber each other.
  * Node-only (uses `node:fs`); a bad/missing file just starts the store empty.
  */
 export class FilePolicyStateStore extends InMemoryPolicyStateStore {
@@ -181,16 +242,7 @@ export class FilePolicyStateStore extends InMemoryPolicyStateStore {
   ) {
     super();
     this.load();
-    const flush = () => this.flush();
-    process.once("exit", flush);
-    process.once("SIGINT", () => {
-      flush();
-      process.exit(130);
-    });
-    process.once("SIGTERM", () => {
-      flush();
-      process.exit(143);
-    });
+    process.once("exit", () => this.flush());
   }
 
   private load(): void {
@@ -206,14 +258,24 @@ export class FilePolicyStateStore extends InMemoryPolicyStateStore {
     }
   }
 
-  /** Write the current snapshot now, bypassing the debounce. */
+  /** Write the current snapshot now, bypassing the debounce. Writes to a
+   *  temp file in the same directory and renames it over the target —
+   *  `rename` is atomic on the same filesystem, so a crash mid-write (or a
+   *  concurrent reader) never observes a truncated/partial JSON file. A
+   *  plain `writeFileSync(filePath, ...)` truncates the target in place
+   *  first, so a crash between the truncate and the write would otherwise
+   *  leave a corrupt file — and a fresh `FilePolicyStateStore` that fails to
+   *  parse it just starts empty, silently zeroing every budget counter and
+   *  the anomaly baseline. */
   flush(): void {
     if (this.saveTimer) {
       clearTimeout(this.saveTimer);
       this.saveTimer = null;
     }
+    const tmpPath = `${this.filePath}.${process.pid}.tmp`;
     try {
-      writeFileSync(this.filePath, JSON.stringify(this.serialize()), "utf8");
+      writeFileSync(tmpPath, JSON.stringify(this.serialize()), "utf8");
+      renameSync(tmpPath, this.filePath);
     } catch (err) {
       console.warn(
         `[spendlens] could not persist policy state to ${this.filePath}: ${
@@ -340,37 +402,42 @@ export class PolicyEngine {
       }
     }
 
-    // 4. Counterparty Mode & First-Seen
+    // Tracks the first *alert*-only signal seen below (anomaly rules whose
+    // action is "alert" never block/hold — they only need to show up on the
+    // final verdict if nothing else already returned). Evaluation order
+    // decides which one wins if more than one fires on the same call.
+    let alertRuleHit: string | null = null;
+    let alertAnomalyZ: number | undefined;
+
+    // 4. Counterparty first-seen gate. Applies in both allowlist and
+    // denylist mode — first contact with any address that isn't already
+    // explicitly trusted (`allow`) or previously vetted (a prior "allow"
+    // verdict) must clear `first_seen` before going further. This is the
+    // primary defense against a prompt-injection redirect to an address the
+    // attacker controls: it doesn't matter which counterparty mode is
+    // configured, an address the agent has never talked to is still new.
+    // Once vetted, `isSeen` stays true for that counterparty from then on —
+    // it is not re-gated on every subsequent call.
     const isAllowlisted = policy.counterparties.allow.includes(counterparty);
     const isSeen = store.isCounterpartySeen(agentId, counterparty);
 
-    if (policy.counterparties.mode === "allowlist" && !isAllowlisted) {
-      // Not explicitly on allowlist
-      if (!isSeen && policy.counterparties.firstSeen) {
-        if (amount <= policy.counterparties.firstSeen.autoAllowBelowUsdc) {
-          // auto allow micro testing
-        } else {
-          const action = policy.counterparties.firstSeen.action;
-          if (action === "block" || action === "hold") {
-            const verdict: EvaluationVerdict = {
-              decision: action,
-              ruleHit: "counterparties.first_seen.action",
-              qualityRules,
-              escalation: policy.escalation,
-            };
-            store.recordCall(input, verdict);
-            return verdict;
-          }
+    if (!isAllowlisted && !isSeen) {
+      store.recordFirstContact(agentId, counterparty, now);
+      if (amount > policy.counterparties.firstSeen.autoAllowBelowUsdc) {
+        const action = policy.counterparties.firstSeen.action;
+        if (action === "block" || action === "hold") {
+          const verdict: EvaluationVerdict = {
+            decision: action,
+            ruleHit: "counterparties.first_seen.action",
+            qualityRules,
+            escalation: policy.escalation,
+          };
+          store.recordCall(input, verdict);
+          return verdict;
         }
-      } else {
-        const verdict: EvaluationVerdict = {
-          decision: "block",
-          ruleHit: "counterparties.mode",
-          qualityRules,
-          escalation: policy.escalation,
-        };
-        store.recordCall(input, verdict);
-        return verdict;
+        if (action === "alert") {
+          alertRuleHit = "counterparties.first_seen.action";
+        }
       }
     }
 
@@ -403,6 +470,10 @@ export class PolicyEngine {
         store.recordCall(input, verdict);
         return verdict;
       }
+      if (action === "alert") {
+        alertRuleHit ??= "anomaly.burn_rate";
+        alertAnomalyZ = ewmaResult.z;
+      }
     }
 
     // New counterparty rate check
@@ -420,14 +491,19 @@ export class PolicyEngine {
           store.recordCall(input, verdict);
           return verdict;
         }
+        if (action === "alert") {
+          alertRuleHit ??= "anomaly.new_counterparty_rate";
+        }
       }
     }
 
-    // Default Allow
+    // Default Allow — carries an alert signal (ruleHit set, decision still
+    // "allow") if one of the alert-only rules above fired without anything
+    // blocking or holding the call.
     const verdict: EvaluationVerdict = {
       decision: "allow",
-      ruleHit: null,
-      anomalyZ: ewmaResult.z,
+      ruleHit: alertRuleHit,
+      anomalyZ: alertAnomalyZ ?? ewmaResult.z,
       qualityRules,
       escalation: policy.escalation,
     };

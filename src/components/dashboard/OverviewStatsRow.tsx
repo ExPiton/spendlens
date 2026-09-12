@@ -26,7 +26,10 @@ export function OverviewStatsRow({ stats }: { stats: OverviewStats }) {
       <StatCard
         label="Blocked"
         value={formatCount(stats.blockedCount)}
-        sublabel={`${formatUsdcPrecise(stats.blockedMicroUsdc)} USDC held`}
+        // Not "held" — Spendlens never takes custody of anything. A
+        // blocked/hold-denied payment is stopped before it's ever signed,
+        // so this is spend that was avoided, not funds sitting somewhere.
+        sublabel={`${formatUsdcPrecise(stats.blockedMicroUsdc)} USDC avoided`}
       />
       <StatCard
         label="Reconciliation"

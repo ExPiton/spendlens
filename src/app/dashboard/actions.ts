@@ -6,6 +6,7 @@ import { requireVerifiedUser } from "@/lib/auth/dal";
 import {
   createAgent,
   deleteAgent,
+  getAgentRecordBySlug,
   renameAgent,
   setAgentStatus,
   setAgentWallet,
@@ -14,6 +15,7 @@ import { createApiKey, revokeApiKey } from "@/lib/db/api-keys";
 import { upsertPolicy } from "@/lib/db/policy";
 import { sendTestEvent } from "@/lib/db/ingest";
 import { seedDemoData, clearTenantData } from "@/lib/db/seed-demo";
+import { listAgentSlugsForCounterparties } from "@/lib/db/repository";
 
 export interface ActionState {
   ok?: boolean;
@@ -49,6 +51,27 @@ export async function setAgentStatusAction(formData: FormData): Promise<void> {
   const status = formData.get("status") === "paused" ? "paused" : "active";
   await setAgentStatus(user.id, agentId, status);
   revalidatePath("/dashboard", "layout");
+}
+
+/** Reconciliation flags counterparties, not agents — this resolves "which
+ *  agents actually paid these counterparties" and pauses every one of them.
+ *  Used by the reconciliation screen's critical-mismatch banner, where
+ *  "halt the affected agents" needs to fan out to however many agents used
+ *  the compromised counterparty. */
+export async function haltAgentsForCounterpartiesAction(
+  counterparties: string[],
+): Promise<{ halted: string[] }> {
+  const { user } = await requireVerifiedUser();
+  const slugs = await listAgentSlugsForCounterparties(user.id, counterparties);
+  const halted: string[] = [];
+  for (const slug of slugs) {
+    const agent = await getAgentRecordBySlug(user.id, slug);
+    if (!agent || agent.status === "paused") continue;
+    await setAgentStatus(user.id, agent.id, "paused");
+    halted.push(slug);
+  }
+  revalidatePath("/dashboard", "layout");
+  return { halted };
 }
 
 export async function renameAgentAction(formData: FormData): Promise<void> {
