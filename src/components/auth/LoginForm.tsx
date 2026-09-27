@@ -28,6 +28,11 @@ export function LoginForm() {
     const { error } = await authClient.signIn.email({ email, password, callbackURL: next });
 
     if (error) {
+      if (error.code === "EMAIL_NOT_VERIFIED") {
+        // Better Auth just re-sent the link (sendOnSignIn).
+        router.push(`/verify-email?email=${encodeURIComponent(email)}`);
+        return;
+      }
       setError(error.message || "Could not sign you in. Check your details and try again.");
       setPending(false);
       return;

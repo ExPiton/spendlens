@@ -1,0 +1,54 @@
+name: Publish SDK
+
+# Publishes @spendlens/sdk to npm when a tag like `sdk-v0.2.0` is pushed.
+# Needs the repository secret NPM_TOKEN (an npm automation token with publish
+# rights on the @spendlens scope). Publishes with npm provenance, and attaches
+# the CycloneDX SBOM to the GitHub release.
+on:
+  push:
+    tags: ["sdk-v*"]
+
+permissions:
+  contents: write   # create the GitHub release + upload the SBOM
+  id-token: write   # npm provenance
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm test
+
+      - name: Check the tag matches package.json
+        run: |
+          TAG="${GITHUB_REF_NAME#sdk-v}"
+          VERSION="$(node -p "require('./package.json').version")"
+          if [ "$TAG" != "$VERSION" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match package.json version $VERSION" >&2
+            exit 1
+          fi
+
+      - name: Build SDK
+        run: npm run build:sdk
+
+      - name: Publish to npm
+        run: npm publish ./sdk-dist --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: SBOM
+        run: npm run sbom
+
+      - name: GitHub release with SBOM
+        run: gh release create "$GITHUB_REF_NAME" sbom.cdx.json --title "$GITHUB_REF_NAME" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

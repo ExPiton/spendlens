@@ -3,9 +3,21 @@ import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { nextCookies } from "better-auth/next-js";
 import { db, schema } from "@/lib/db";
-import { sendEmail } from "@/lib/email";
+import { isEmailConfigured, sendEmail } from "@/lib/email";
 
 const appUrl = process.env.APP_URL ?? "http://localhost:3000";
+
+/**
+ * E-mail verification is required whenever a real e-mail provider is
+ * configured (RESEND_API_KEY or SMTP_HOST) — i.e. in any real deployment —
+ * so nobody can sign up as an address they don't control. Local dev without
+ * a provider stays frictionless. `REQUIRE_EMAIL_VERIFICATION=true|false`
+ * overrides either way.
+ */
+export const emailVerificationRequired =
+  process.env.REQUIRE_EMAIL_VERIFICATION !== undefined
+    ? process.env.REQUIRE_EMAIL_VERIFICATION === "true"
+    : isEmailConfigured();
 
 /** The canonical origin, plus the localhost/127.0.0.1 sibling so local tooling
  *  and the two names for loopback both pass the CSRF/origin check in dev. */
@@ -62,10 +74,7 @@ export const auth = betterAuth({
   }),
   emailAndPassword: {
     enabled: true,
-    // Verification is disabled for now — users can sign in immediately after
-    // signup. Flip this back to `true` (and `emailVerification.sendOnSignUp`)
-    // once an e-mail provider is configured.
-    requireEmailVerification: false,
+    requireEmailVerification: emailVerificationRequired,
     minPasswordLength: 8,
     sendResetPassword: async ({ user, url }) => {
       await sendEmail({
@@ -78,9 +87,9 @@ export const auth = betterAuth({
     },
   },
   emailVerification: {
-    // No verification e-mail on signup while verification is not required.
-    // The manual "resend" endpoint still works if you re-enable the flow.
-    sendOnSignUp: false,
+    sendOnSignUp: emailVerificationRequired,
+    // An unverified user who tries to sign in gets a fresh link.
+    sendOnSignIn: emailVerificationRequired,
     autoSignInAfterVerification: true,
     sendVerificationEmail: async ({ user, url }) => {
       await sendEmail({

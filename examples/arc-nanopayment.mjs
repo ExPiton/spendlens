@@ -44,6 +44,7 @@ const { guardGateway, ARC, ARC_GATEWAY_CHAIN } = await import(
 const client = new GatewayClient({
   chain: ARC_GATEWAY_CHAIN,
   privateKey: process.env.AGENT_PRIVATE_KEY,
+  rpcUrl: ARC.rpcUrl,
 });
 
 console.log(`Wallet ${client.address} on Arc ${ARC.network} (chain ${ARC.chainId})`);
@@ -62,8 +63,11 @@ if (balances.gateway.available < 100_000n) {
 
 const pay = guardGateway(client, {
   agentId: process.env.SPENDLENS_AGENT_ID ?? "arc-nanopayment-demo",
-  // policy: yamlString,      // optional; permissive by default
-  // sink + apiKey read from SPENDLENS_URL / SPENDLENS_API_KEY
+  // policy: "./policy.yaml",  // or YAML text. Omitted: with SPENDLENS_URL +
+  //                           // SPENDLENS_API_KEY the agent follows its
+  //                           // dashboard policy (kill switch included);
+  //                           // without them, a permissive testnet-only default.
+  //                           // On mainnet a policy is mandatory.
 });
 
 console.log(`\n→ pay ${PAID_API_URL}`);
@@ -83,4 +87,5 @@ console.log(
     ? "\nDone — check your dashboard → Ledger."
     : "\nDone (set SPENDLENS_URL + SPENDLENS_API_KEY to record this in a dashboard).",
 );
+await pay.drain();
 process.exit(0);

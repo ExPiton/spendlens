@@ -52,5 +52,14 @@ export const AuthorizationRecordSchema = z.object({
   quality: QualitySchema.nullable(),
   settlementId: z.string().nullable(),
   createdAt: z.string().datetime({ offset: true }),
+  /** SHA-256 of the canonical JSON of the policy this decision was evaluated
+   *  against (`policyHash()` in `@/lib/policy-hash`). Ties every ledger row
+   *  to the exact rule set that produced it — a tampered or swapped policy
+   *  file shows up as a hash nobody published. Optional so records from SDKs
+   *  that predate it still validate. */
+  policyHash: z.string().nullable().optional(),
+  /** The dashboard's version number for that policy, when the SDK got it
+   *  from the server (remote policy sync); null for a purely local policy. */
+  policyVersion: z.number().int().nullable().optional(),
 });
 export type AuthorizationRecord = z.infer<typeof AuthorizationRecordSchema>;

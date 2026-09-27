@@ -71,9 +71,8 @@ export async function getOverviewStats(
   );
   const blockedMicroUsdc = blocked.reduce((sum, r) => sum + r.amountMicroUsdc, 0);
 
-  const relevantCounterparties = new Set(scoped.map((r) => r.counterparty));
   const reconciliation = generateReconciliation().filter(
-    (r) => agentId === ALL_AGENTS || relevantCounterparties.has(r.counterparty),
+    (r) => agentId === ALL_AGENTS || r.agentId === agentId,
   );
 
   return OverviewStatsSchema.parse({

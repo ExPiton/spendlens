@@ -11,6 +11,7 @@ const TABS = [
   { href: "/dashboard/agents", label: "Agents" },
   { href: "/dashboard/counterparties", label: "Counterparties" },
   { href: "/dashboard/reconciliation", label: "Reconciliation" },
+  { href: "/dashboard/approvals", label: "Approvals" },
   { href: "/dashboard/policies", label: "Policies" },
   { href: "/dashboard/anomalies", label: "Anomaly & Rate" },
   { href: "/dashboard/simulator", label: "Simulator" },
@@ -20,10 +21,13 @@ export function DashboardNav({
   userName,
   userEmail,
   arcLabel,
+  pendingApprovals = 0,
 }: {
   userName: string;
   userEmail: string;
   arcLabel: string;
+  /** Holds waiting for a human — badged on the Approvals tab. */
+  pendingApprovals?: number;
 }) {
   const pathname = usePathname();
   const initial = (userName || userEmail || "?").charAt(0).toUpperCase();
@@ -83,6 +87,11 @@ export function DashboardNav({
                 }`}
               >
                 {tab.label}
+                {tab.href === "/dashboard/approvals" && pendingApprovals > 0 && (
+                  <span className="ml-1.5 rounded-full bg-held px-1.5 py-px font-mono text-[10px] font-bold text-ink">
+                    {pendingApprovals}
+                  </span>
+                )}
               </Link>
             );
           })}

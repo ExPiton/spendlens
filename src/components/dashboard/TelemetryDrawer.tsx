@@ -129,6 +129,19 @@ export function TelemetryDrawer({ record, onClose }: TelemetryDrawerProps) {
               <span className="font-mono text-[11px] break-all select-all">{record.nonce || "Not signed"}</span>
             </div>
 
+            <div className="flex flex-col gap-1 pt-2">
+              <span className="text-muted">
+                Policy (SHA-256{record.policyVersion != null ? `, dashboard v${record.policyVersion}` : ""}):
+              </span>
+              <div className="rounded-xs bg-bg p-2 font-mono text-[11px] break-all select-all text-muted">
+                {record.policyHash || "Not recorded (older SDK)"}
+              </div>
+              <p className="mt-0.5 text-[10px] text-muted italic">
+                * The exact rule set this decision was evaluated against. A hash the dashboard never
+                issued means the agent ran a policy nobody here published.
+              </p>
+            </div>
+
             <div className="flex items-center justify-between pt-2">
               <span className="text-muted">Arc Settlement ID:</span>
               <span className="font-mono">{record.settlementId || "Pending / not yet reconciled"}</span>

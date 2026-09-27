@@ -53,23 +53,27 @@ ok(!!KEY, `minted API key ${KEY?.slice(0, 11)}…`);
 const auth = { authorization: `Bearer ${KEY}` };
 
 // 3. escalate — under the ceiling → approved
-console.log("escalate (amount ≤ auto_allow ceiling 0.01):");
+console.log("escalate (amount ≤ default ceiling = 5 × first_seen 0.01):");
 const eOk = await api("POST", "/api/escalate", {
   counterparty: "0xnewpayee1", resource: "https://api.new/x", amountUsdc: 0.005, ruleHit: "counterparties.first_seen.action",
 }, auth);
-ok(eOk.status === 200 && eOk.json.approved === true && eOk.json.decision === "hold_approved", JSON.stringify(eOk.json));
+ok(eOk.status === 200 && eOk.json.approved === true && eOk.json.status === "approved", JSON.stringify(eOk.json));
 
-// 4. escalate — over the ceiling → denied
-console.log("escalate (amount > ceiling):");
-const eNo = await api("POST", "/api/escalate", {
-  counterparty: "0xnewpayee2", resource: "https://api.new/y", amountUsdc: 0.05, ruleHit: "counterparties.first_seen.action",
+// 4. escalate — over the ceiling → pending for a human, then denied by the owner
+console.log("escalate (amount > ceiling → human decision):");
+const eHeld = await api("POST", "/api/escalate", {
+  counterparty: "0xnewpayee2", resource: "https://api.new/y", amountUsdc: 0.2, ruleHit: "counterparties.first_seen.action",
 }, auth);
-ok(eNo.status === 200 && eNo.json.approved === false && eNo.json.decision === "hold_denied", JSON.stringify(eNo.json));
+ok(eHeld.status === 202 && eHeld.json.status === "pending" && !!eHeld.json.pollUrl, JSON.stringify(eHeld.json));
+const deny = await api("POST", `/api/escalations/${eHeld.json.id}`, { decision: "deny" });
+const polled = await api("GET", `/api/escalate/${eHeld.json.id}`, undefined, auth);
+ok(deny.status === 200 && polled.json.status === "denied", `poll after deny: ${JSON.stringify(polled.json)}`);
 
-// 5. both decisions are in the ledger
-const led = await api("GET", `/api/authorizations?agentId=${AGENT}&pageSize=50`);
-const decisions = (led.json.records ?? []).map((r) => r.decision).sort();
-ok(decisions.includes("hold_approved") && decisions.includes("hold_denied"), `ledger decisions: ${JSON.stringify(decisions)}`);
+// 5. both decisions are on the owner's escalation list (the SDK, not the
+//    webhook, writes the hold_approved / hold_denied ledger row)
+const list = await api("GET", "/api/escalations");
+const statuses = (list.json.escalations ?? []).map((e) => e.status).sort();
+ok(statuses.includes("approved") && statuses.includes("denied"), `escalations: ${JSON.stringify(statuses)}`);
 
 // 6. rate limit on ingest (limit 240/min/key)
 console.log("rate limit on POST /api/authorizations (expect 429 after 240):");

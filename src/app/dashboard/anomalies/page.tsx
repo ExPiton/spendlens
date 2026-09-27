@@ -62,6 +62,7 @@ export default async function AnomaliesPage(props: AnomaliesPageProps) {
 
   const zThreshold = policy?.config.anomaly.burnRate.zThreshold;
   const maxNewPerHour = policy?.config.anomaly.newCounterpartyRate.maxPerHour;
+  const entropy = policy?.config.anomaly.counterpartyEntropy;
 
   const minutesSinceFirst = minutesSince(activity?.firstActivityTs ?? null);
   const coldStart = activity ? isColdStart(activity.totalCount, minutesSinceFirst) : null;
@@ -83,12 +84,8 @@ export default async function AnomaliesPage(props: AnomaliesPageProps) {
         <AgentSwitcher options={options} currentAgentId={agentId} />
       </div>
 
-      {/* 2 Core Signals — this is everything the engine actually implements.
-          A third "Counterparty Entropy" card used to sit here advertising a
-          distribution-analysis check with its own formula; nothing in the
-          codebase computes any such thing, so it always showed a static
-          label with zero real signal behind it. Removed rather than faked. */}
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+      {/* The three signals the engine implements (src/sdk/policy-engine.ts). */}
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
         <div className="rounded-xs border border-border bg-surface p-5">
           <div className="flex items-center justify-between">
             <span className="font-mono text-xs font-bold text-signal">Signal 1</span>
@@ -118,6 +115,28 @@ export default async function AnomaliesPage(props: AnomaliesPageProps) {
           </p>
           <div className="mt-4 rounded-xs bg-surface-2 p-2 font-mono text-[11px] text-muted">
             first_seen_velocity &gt; {maxNewPerHour ?? "N"}/hr &rarr; {policy?.config.anomaly.newCounterpartyRate.action ?? "configured action"}
+          </div>
+        </div>
+
+        <div className="rounded-xs border border-border bg-surface p-5">
+          <div className="flex items-center justify-between">
+            <span className="font-mono text-xs font-bold text-critical">Signal 3</span>
+            <span className="rounded-xs bg-critical/10 px-2 py-0.5 font-mono text-[10px] text-critical">
+              {entropy
+                ? `max drop: ${Math.round(entropy.maxDrop * 100)}% / ${entropy.windowMinutes}m`
+                : policy
+                  ? "off in this policy"
+                  : "varies by agent"}
+            </span>
+          </div>
+          <h3 className="mt-2 font-semibold text-sm">Counterparty Entropy</h3>
+          <p className="mt-1 text-xs text-muted">
+            How spread out the agent&apos;s calls are across counterparties. A sudden collapse onto one
+            address — a redirect that stays under every per-call limit — shows up as an entropy drop.
+          </p>
+          <div className="mt-4 rounded-xs bg-surface-2 p-2 font-mono text-[11px] text-muted">
+            H = -&Sigma; p_i log2 p_i ; (H&#772; - H) / H&#772; &gt; {entropy ? entropy.maxDrop : "max_drop"} &rarr;{" "}
+            {entropy?.action ?? "configured action"}
           </div>
         </div>
       </div>

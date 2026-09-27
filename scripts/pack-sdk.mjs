@@ -31,8 +31,13 @@ const pkg = {
       require: "./index.js",
     },
   },
-  files: ["index.mjs", "index.js", "index.d.ts", "index.d.mts", "README.md"],
-  license: rootPkg.license || "UNLICENSED",
+  files: ["index.mjs", "index.js", "index.d.ts", "index.d.mts", "README.md", "LICENSE"],
+  license: rootPkg.license || "MIT",
+  engines: { node: ">=20.16" },
+  repository: { type: "git", url: "git+https://github.com/Expiyon/spendlens.git" },
+  homepage: "https://github.com/Expiyon/spendlens#readme",
+  keywords: ["x402", "nanopayments", "circle", "arc", "usdc", "ai-agents", "policy", "audit"],
+  publishConfig: { access: "public", provenance: true },
   dependencies: {
     ...pick("zod"),
     ...pick("js-yaml"),
@@ -52,21 +57,25 @@ writeFileSync(
     "",
     "const pay = guard({",
     '  agentId: "research-crawler-01",',
-    "  apiKey: process.env.SPENDLENS_API_KEY,   // sl_... from the Spendlens dashboard",
-    '  sink: process.env.SPENDLENS_URL,          // https://your-spendlens.example.com',
-    "  // policy: yamlString,                    // optional; permissive by default",
-    "  // signer: createLocalSigner(process.env.AGENT_PRIVATE_KEY),  // for real payments",
+    '  policy: "./policy.yaml",                  // YAML text, a file path, or omit to follow the dashboard',
+    "  signer: createLocalSigner(process.env.AGENT_PRIVATE_KEY),  // required on Arc mainnet",
     "});",
     "",
     'const res = await pay.fetch("https://api.example.io/v1/data", { taskId: "task-1" });',
     "```",
     "",
-    "`SPENDLENS_URL` and `SPENDLENS_API_KEY` are read from the environment when",
-    "not passed. Without a `signer`, a clearly-marked mock signature is used:",
-    "policy checks and telemetry still work, but the payment will not settle.",
+    "For Circle Nanopayments on Arc use `guardGateway(new GatewayClient({ chain: ARC_GATEWAY_CHAIN, privateKey, rpcUrl: ARC.rpcUrl }), { agentId })`.",
+    "",
+    "- `SPENDLENS_URL` + `SPENDLENS_API_KEY` (env) connect the guard to your dashboard: telemetry, the",
+    "  kill switch (a halted agent is blocked before signing), and live policy updates.",
+    "- Arc mainnet (`ARC_NETWORK=mainnet`): a policy and a real signer are mandatory; the",
+    "  permissive default and the mock signature are testnet-only.",
+    "- Self-hosted: `sink: createSqliteLedger(\"./ledger.db\").sink` keeps an append-only SQLite ledger.",
     "",
   ].join("\n"),
 );
+
+copyFileSync(path.join(root, "LICENSE"), path.join(sdkDist, "LICENSE"));
 
 // bundled types alongside the single-file build
 copyFileSync(path.join(sdkDist, "index.d.ts"), path.join(downloads, "spendlens-sdk.d.ts"));

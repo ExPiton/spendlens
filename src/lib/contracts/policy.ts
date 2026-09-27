@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { normalizeCounterparty } from "@/lib/counterparty";
+import { compileBodySchema } from "@/lib/engine/schema-check";
 
 /**
  * Every `action` field in the policy file (first_seen, burn_rate,
@@ -10,7 +12,10 @@ import { z } from "zod";
 export const PolicyActionSchema = z.enum(["allow", "hold", "block", "alert"]);
 export type PolicyAction = z.infer<typeof PolicyActionSchema>;
 
-export const BudgetScopeSchema = z.enum(["task", "hour", "day"]);
+/** `hour`/`day` are rolling windows ending now; `month` is the current UTC
+ *  calendar month (a billing-cycle budget, which is what "monthly" means to
+ *  a finance lead — not "the last 30 days"). */
+export const BudgetScopeSchema = z.enum(["task", "hour", "day", "month"]);
 export type BudgetScope = z.infer<typeof BudgetScopeSchema>;
 
 /**
@@ -58,17 +63,41 @@ export const PolicyFileSchema = z.object({
       max_per_hour: z.number().int().positive(),
       action: PolicyActionSchema,
     }),
+    // Third signal: sudden *concentration* of spend. Normalized Shannon
+    // entropy of the counterparty distribution over the trailing window,
+    // compared with an EWMA baseline of the same measure. A drop of more
+    // than `max_drop` (fraction of the baseline) means the agent went from
+    // spreading calls across its usual providers to hammering one — the
+    // shape of a prompt-injection redirect that stays under every per-call
+    // limit. Optional: omitted means the signal is off.
+    counterparty_entropy: z
+      .object({
+        window_minutes: z.number().positive().default(60),
+        min_calls: z.number().int().positive().default(20),
+        max_drop: z.number().gt(0).lt(1).default(0.5),
+        action: PolicyActionSchema,
+      })
+      .optional(),
   }),
 
   quality: z.object({
     failure_status_codes: z.array(z.number().int()),
     empty_body_is_failure: z.boolean(),
-    json_schema: z.string().nullable(),
+    // A JSON Schema the response body must satisfy (else quality =
+    // `schema_fail`). Either an inline schema object in the YAML, or a JSON
+    // string of one. null/omitted disables the check.
+    json_schema: z
+      .union([z.string(), z.record(z.string(), z.unknown())])
+      .nullable()
+      .default(null),
     max_latency_ms: z.number().int().positive(),
   }),
 
   escalation: z.object({
-    webhook: z.string().url(),
+    // Where a `hold` is sent for a decision. Spendlens's own
+    // `<APP_URL>/api/escalate` queues it for a human (see that route);
+    // null disables escalation, so every hold resolves via `on_timeout`.
+    webhook: z.string().url().nullable().default(null),
     timeout_seconds: z.number().int().positive(),
     on_timeout: PolicyActionSchema,
     // Ceiling under which Spendlens's own /api/escalate auto-approves a
@@ -83,6 +112,23 @@ export const PolicyFileSchema = z.object({
   }),
 });
 export type PolicyFile = z.infer<typeof PolicyFileSchema>;
+
+/** `PolicyFileSchema` plus the checks that need more than shape: a
+ *  `json_schema` must compile, so a typo is rejected when the policy is saved
+ *  or the guard is built — never discovered mid-payment. */
+export const ValidatedPolicyFileSchema = PolicyFileSchema.superRefine((file, ctx) => {
+  const js = file.quality.json_schema;
+  if (js === null) return;
+  try {
+    compileBodySchema(typeof js === "string" ? js : JSON.stringify(js));
+  } catch (err) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["quality", "json_schema"],
+      message: err instanceof Error ? err.message : String(err),
+    });
+  }
+});
 
 /** App-internal, camelCase view of a validated policy file. */
 export interface PolicyConfig {
@@ -104,6 +150,13 @@ export interface PolicyConfig {
       action: PolicyAction;
     };
     newCounterpartyRate: { maxPerHour: number; action: PolicyAction };
+    /** Optional — absent on policies saved before this signal existed. */
+    counterpartyEntropy?: {
+      windowMinutes: number;
+      minCalls: number;
+      maxDrop: number;
+      action: PolicyAction;
+    };
   };
   quality: {
     failureStatusCodes: number[];
@@ -112,7 +165,7 @@ export interface PolicyConfig {
     maxLatencyMs: number;
   };
   escalation: {
-    webhook: string;
+    webhook: string | null;
     timeoutSeconds: number;
     onTimeout: PolicyAction;
     autoApproveBelowUsdc?: number;
@@ -134,8 +187,8 @@ export function toPolicyConfig(file: PolicyFile): PolicyConfig {
     },
     counterparties: {
       mode: file.counterparties.mode,
-      allow: file.counterparties.allow,
-      deny: file.counterparties.deny,
+      allow: file.counterparties.allow.map(normalizeCounterparty),
+      deny: file.counterparties.deny.map(normalizeCounterparty),
       firstSeen: {
         action: file.counterparties.first_seen.action,
         autoAllowBelowUsdc: file.counterparties.first_seen.auto_allow_below_usdc,
@@ -152,11 +205,24 @@ export function toPolicyConfig(file: PolicyFile): PolicyConfig {
         maxPerHour: file.anomaly.new_counterparty_rate.max_per_hour,
         action: file.anomaly.new_counterparty_rate.action,
       },
+      ...(file.anomaly.counterparty_entropy
+        ? {
+            counterpartyEntropy: {
+              windowMinutes: file.anomaly.counterparty_entropy.window_minutes,
+              minCalls: file.anomaly.counterparty_entropy.min_calls,
+              maxDrop: file.anomaly.counterparty_entropy.max_drop,
+              action: file.anomaly.counterparty_entropy.action,
+            },
+          }
+        : {}),
     },
     quality: {
       failureStatusCodes: file.quality.failure_status_codes,
       emptyBodyIsFailure: file.quality.empty_body_is_failure,
-      jsonSchema: file.quality.json_schema,
+      jsonSchema:
+        file.quality.json_schema === null || typeof file.quality.json_schema === "string"
+          ? file.quality.json_schema
+          : JSON.stringify(file.quality.json_schema),
       maxLatencyMs: file.quality.max_latency_ms,
     },
     escalation: {

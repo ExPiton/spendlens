@@ -8,7 +8,7 @@
  *      · /premium   -> allow, real gas-free batched settlement
  *      · /empty     -> allow + quality "empty"
  *      · /expensive -> BLOCK before signing (per_call.max_usdc); no funds move
- *   -> reconcileFromGateway -> /api/reconciliation/settlements
+ *   -> keyless server-side reconciliation (/api/reconciliation/run)
  *
  * Needs in .env: AGENT_PRIVATE_KEY (funded buyer), SELLER_ADDRESS.
  * Usage: node scripts/arc-live-test.mjs [http://localhost:3000]
@@ -36,7 +36,7 @@ if (!process.env.AGENT_PRIVATE_KEY || !process.env.SELLER_ADDRESS) {
 }
 
 const { GatewayClient } = await import("@circle-fin/x402-batching/client");
-const { guardGateway, reconcileFromGateway, ARC, ARC_GATEWAY_CHAIN } = await import(
+const { guardGateway, ARC, ARC_GATEWAY_CHAIN } = await import(
   "../public/downloads/spendlens-sdk.mjs"
 );
 
@@ -64,6 +64,7 @@ step("Spendlens: signup + agent + API key");
 const client = new GatewayClient({
   chain: ARC_GATEWAY_CHAIN,
   privateKey: process.env.AGENT_PRIVATE_KEY,
+  rpcUrl: ARC.rpcUrl,
 });
 await api("POST", "/api/auth/sign-up/email", {
   name: "Arc", email: EMAIL, password: "arc-live-password",
@@ -128,19 +129,23 @@ for (const [route, note] of [
 await new Promise((r) => setTimeout(r, 2500));
 seller.kill();
 
-// 5. reconcile from Gateway
-step("reconcileFromGateway → /api/reconciliation/settlements");
+// 5. reconcile — keyless, server-side, from the wallet address on file
+step("Keyless reconciliation: POST /api/reconciliation/run (server reads Gateway by address)");
 try {
-  const settlements = await reconcileFromGateway(client, { fromAddress: client.address });
-  for (const s of settlements) {
-    console.log(`  ${s.counterparty}  ${(s.chainAmountMicroUsdc / 1e6).toFixed(6)} USDC`);
-  }
-  const r = await fetch(`${BASE}/api/reconciliation/settlements`, {
+  // graceSeconds: 0 — this run wants the transfers from seconds ago too.
+  const r = await fetch(`${BASE}/api/reconciliation/run`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify({ settlements }),
+    body: JSON.stringify({ graceSeconds: 0 }),
   });
   console.log(`  POST -> ${r.status}`, await r.json().catch(() => ({})));
+  const rec = await api("GET", "/api/reconciliation");
+  for (const row of rec.json.records ?? []) {
+    console.log(
+      `  ${row.agentId} ${row.counterparty} chain ${(row.chainAmountMicroUsdc / 1e6).toFixed(6)} ` +
+        `ledger ${(row.ledgerAmountMicroUsdc / 1e6).toFixed(6)} → ${row.status}`,
+    );
+  }
 } catch (e) {
   console.log(`  reconcile: ${e.message}`);
 }

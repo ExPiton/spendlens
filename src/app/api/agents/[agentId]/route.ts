@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { getAgent, listAuthorizations } from "@/lib/db/repository";
-import { getAgentRecordBySlug, setAgentStatus } from "@/lib/db/agents";
+import { getAgentRecordBySlug, setAgentStatus, setAgentWallet } from "@/lib/db/agents";
 import { getPolicyBySlug } from "@/lib/db/policy";
 import { requireSessionUser, isResponse } from "@/lib/auth/api";
 
@@ -35,9 +35,16 @@ export async function GET(
   }
 }
 
-const PatchBodySchema = z.object({
-  status: z.enum(["active", "paused"]),
-});
+const PatchBodySchema = z
+  .object({
+    status: z.enum(["active", "paused"]).optional(),
+    /** The agent's Arc wallet (0x…40 hex) — enables the scheduled keyless
+     *  Gateway reconciliation for it. null clears it. */
+    walletAddress: z.string().nullable().optional(),
+  })
+  .refine((b) => b.status !== undefined || b.walletAddress !== undefined, {
+    message: "Nothing to update",
+  });
 
 /** Programmatic kill switch — the dashboard's "Halt agent" button was a
  *  server-action form field with no REST equivalent, so nothing outside the
@@ -62,12 +69,27 @@ export async function PATCH(
       return NextResponse.json({ error: "Agent not found" }, { status: 404 });
     }
 
-    await setAgentStatus(auth.userId, record.id, body.status);
-    return NextResponse.json({ success: true, status: body.status });
+    if (body.walletAddress !== undefined) {
+      try {
+        await setAgentWallet(auth.userId, record.id, body.walletAddress);
+      } catch (err) {
+        return NextResponse.json(
+          { error: err instanceof Error ? err.message : "Invalid wallet address" },
+          { status: 400 },
+        );
+      }
+    }
+    if (body.status) await setAgentStatus(auth.userId, record.id, body.status);
+    const updated = await getAgentRecordBySlug(auth.userId, slug);
+    return NextResponse.json({
+      success: true,
+      status: updated?.status,
+      walletAddress: updated?.walletAddress ?? null,
+    });
   } catch (err) {
     if (err instanceof z.ZodError) {
       return NextResponse.json(
-        { error: "Body must be { status: 'active' | 'paused' }" },
+        { error: "Body must be { status?: 'active' | 'paused', walletAddress?: string | null }" },
         { status: 400 },
       );
     }

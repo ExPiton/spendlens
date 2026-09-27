@@ -1,14 +1,16 @@
 import { NextResponse } from "next/server";
 
 /**
- * A fixed-window in-process rate limiter. One counter per key per window;
- * when the window rolls over the counter resets.
+ * A fixed-window rate limiter. One counter per key per window; when the
+ * window rolls over the counter resets.
  *
- * This lives in the server process's memory, so each instance enforces its
- * own budget — correct for the single-container Docker deployment here. Behind
- * a load balancer with N instances the effective limit is N× the configured
- * value; swap this module for a shared store (Redis / Upstash) at that point.
- * The call sites don't change — they only use `rateLimit()`.
+ * Two stores:
+ *   - memory (default): per-process — right for the single-container Docker
+ *     deployment. Behind N instances the effective limit would be N×.
+ *   - postgres (`RATE_LIMIT_STORE=postgres`): one shared counter per key in
+ *     the `rate_limit` table, a single atomic upsert per request — correct
+ *     across any number of instances, no extra infrastructure.
+ * Call sites only use `enforceRateLimit()`, whichever store is active.
  */
 
 interface Bucket {
@@ -92,12 +94,19 @@ export function clientIp(request: Request): string {
  * caller is over budget, otherwise `{ headers }` to spread onto the real
  * response so clients can see their remaining budget.
  */
-export function enforceRateLimit(
+export async function enforceRateLimit(
   key: string,
   limit: number,
   windowMs = 60_000,
-): { response: NextResponse } | { headers: Record<string, string> } {
-  const r = rateLimit(key, limit, windowMs);
+): Promise<{ response: NextResponse } | { headers: Record<string, string> }> {
+  const r =
+    process.env.RATE_LIMIT_STORE === "postgres"
+      ? await rateLimitPostgres(key, limit, windowMs).catch((err) => {
+          // A limiter outage must not become an API outage.
+          console.error("[spendlens] postgres rate limiter failed, using memory:", err);
+          return rateLimit(key, limit, windowMs);
+        })
+      : rateLimit(key, limit, windowMs);
   const headers = rateLimitHeaders(r);
   if (r.ok) return { headers };
   return {
@@ -105,5 +114,33 @@ export function enforceRateLimit(
       { error: "Rate limit exceeded. Slow down and retry after the window resets." },
       { status: 429, headers },
     ),
+  };
+}
+
+/** Shared-store variant: one atomic upsert — increments within the current
+ *  window, or starts a new window when the stored one has expired. */
+async function rateLimitPostgres(
+  key: string,
+  limit: number,
+  windowMs: number,
+): Promise<RateLimitResult> {
+  const { db } = await import("@/lib/db");
+  const { sql } = await import("drizzle-orm");
+  const resetAt = new Date(Date.now() + windowMs);
+  const [row] = await db.execute<{ count: number; resetAt: string | Date }>(sql`
+    insert into "rate_limit" ("key", "count", "resetAt") values (${key}, 1, ${resetAt.toISOString()}::timestamptz)
+    on conflict ("key") do update set
+      "count"   = case when "rate_limit"."resetAt" <= now() then 1 else "rate_limit"."count" + 1 end,
+      "resetAt" = case when "rate_limit"."resetAt" <= now() then excluded."resetAt" else "rate_limit"."resetAt" end
+    returning "count", "resetAt"
+  `);
+  const now = Date.now();
+  const reset = new Date(row.resetAt).getTime();
+  return {
+    ok: row.count <= limit,
+    limit,
+    remaining: Math.max(0, limit - row.count),
+    resetAt: reset,
+    retryAfter: Math.max(1, Math.ceil((reset - now) / 1000)),
   };
 }

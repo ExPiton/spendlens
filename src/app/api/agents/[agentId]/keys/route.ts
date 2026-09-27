@@ -37,7 +37,7 @@ export async function POST(
 
   // 20 key mints/min per user — plenty for real key rotation, caps abuse of
   // a leaked session filling the table with keys.
-  const limited = enforceRateLimit(`create-key:${auth.userId}`, 20);
+  const limited = await enforceRateLimit(`create-key:${auth.userId}`, 20);
   if ("response" in limited) return limited.response;
 
   try {

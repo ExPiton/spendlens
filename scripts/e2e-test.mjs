@@ -8,6 +8,9 @@
  *   -> feed simulated on-chain settlement, including a phantom (key-leak)
  *   -> read every dashboard API back and assert the outcomes
  *
+ *   -> kill switch, remote policy, human escalation, case-insensitive
+ *      counterparties, per-agent reconciliation
+ *
  * Usage:  node scripts/e2e-test.mjs [http://127.0.0.1:3000]
  *
  * A real Circle/Arc faucet + a live Nanopayments merchant are out of reach from
@@ -156,7 +159,6 @@ escalation: { webhook: "https://example.com/x", timeout_seconds: 30, on_timeout:
     }
   }
   await new Promise((r) => setTimeout(r, 2500)); // let the ledger queue flush
-  server.kill();
 
   check("SDK signed & merchant accepted the signature", verified >= 20, `${verified} verified 200s`);
   check("policy blocked expensive + scam calls", blocked >= 7, `${blocked} blocked`);
@@ -165,6 +167,7 @@ escalation: { webhook: "https://example.com/x", timeout_seconds: 30, on_timeout:
   // 7. reconciliation: recompute, then feed simulated on-chain settlement
   await api("POST", "/api/reconciliation");
   const settle = await api("POST", "/api/reconciliation/settlements", {
+    agentId: AGENT,
     settlements: [
       { counterparty: "api.example.io", chainAmountMicroUsdc: ledgerGuess(forwarded, "api.example.io") },
       { counterparty: "0xleakedkey000000000000000000000000000000", chainAmountMicroUsdc: 500000, settlementId: "stl_phantom" },
@@ -202,8 +205,78 @@ escalation: { webhook: "https://example.com/x", timeout_seconds: 30, on_timeout:
   check("reconciliation: phantom settlement flagged CRITICAL", !!phantom && phantom.status === "critical", phantom?.status);
   check("reconciliation: summary worstStatus = critical", rec.json?.summary?.worstStatus === "critical", rec.json?.summary?.worstStatus);
 
-  // 9. kill switch
-  // (status flip is UI-only; verify a revoked key is rejected instead)
+  // 9. SDK control plane: config endpoint, remote policy, kill switch
+  const bearer = { authorization: `Bearer ${apiKey}` };
+  const cfg = await api("GET", "/api/sdk/config", undefined, bearer);
+  check(
+    "sdk config: agent active + dashboard policy served",
+    cfg.status === 200 && cfg.json?.agent?.status === "active" && cfg.json?.policy?.version >= 2,
+    `http ${cfg.status} v${cfg.json?.policy?.version}`,
+  );
+
+  const remote = guard({ agentId: AGENT, apiKey, serverUrl: BASE, signer: createLocalSigner(walletKey), syncIntervalMs: 0 });
+  await remote.sync();
+  check(
+    "remote policy: guard without a local policy adopts the dashboard's",
+    remote.getEngine().getPolicyVersion() === cfg.json?.policy?.version &&
+      remote.getEngine().getPolicyHash() === cfg.json?.policy?.hash,
+    `v${remote.getEngine().getPolicyVersion()}`,
+  );
+
+  const paused = await api("PATCH", `/api/agents/${AGENT}`, { status: "paused" });
+  await remote.sync();
+  let haltRule = null;
+  try {
+    await remote.fetch(`${PAID}/v1/data`, { taskId: "halt-check" });
+  } catch (e) {
+    haltRule = e?.ruleHit ?? e?.message;
+  }
+  check("kill switch: halted agent's payment blocked before signing", paused.status === 200 && haltRule === "agent.halted", String(haltRule));
+
+  const pausedIngest = await fetch(`${BASE}/api/authorizations`, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...bearer },
+    body: JSON.stringify({ records: [] }),
+  });
+  check(
+    "kill switch: ingest still accepted while halted, with status header",
+    pausedIngest.status === 200 && pausedIngest.headers.get("x-spendlens-agent-status") === "paused",
+    `http ${pausedIngest.status}`,
+  );
+
+  await api("PATCH", `/api/agents/${AGENT}`, { status: "active" });
+  await remote.sync();
+  let resumedOk = false;
+  try {
+    resumedOk = (await remote.fetch(`${PAID}/v1/data`, { taskId: "resume-check" })).status === 200;
+  } catch {}
+  check("kill switch: resuming lets payments through again", resumedOk);
+  await remote.drain();
+  server.kill();
+
+  // 10. human-in-the-loop escalation
+  const held = await api("POST", "/api/escalate", { counterparty: "0xAbC0000000000000000000000000000000000001", resource: "https://x.test/r", amountUsdc: 1.5, ruleHit: "counterparties.first_seen.action" }, bearer);
+  check("escalation: over the ceiling → pending for a human (202)", held.status === 202 && held.json?.status === "pending", `http ${held.status}`);
+  const decide = await api("POST", `/api/escalations/${held.json?.id}`, { decision: "approve" });
+  const polled = await api("GET", `/api/escalate/${held.json?.id}`, undefined, bearer);
+  check("escalation: owner approves, the SDK's poll sees it", decide.status === 200 && polled.json?.status === "approved", polled.json?.status);
+
+  // 11. case-insensitive counterparties
+  await api("POST", "/api/authorizations", { records: [{
+    id: `case-${stamp}`, ts: new Date().toISOString(), agentId: AGENT, taskId: null,
+    counterparty: "API.Example.IO", resource: "x", amountMicroUsdc: 1, decision: "allow",
+    ruleHit: null, nonce: null, chainId: 5042002, httpStatus: 200, latencyMs: 1, bodyBytes: 1,
+    bodySha256: null, quality: "ok", settlementId: null, createdAt: new Date().toISOString(),
+  }] }, bearer);
+  const mixed = await api("GET", `/api/authorizations?agentId=${AGENT}&counterparty=API.EXAMPLE.io&pageSize=200`);
+  check(
+    "counterparties are canonical (lowercase) in the ledger",
+    (mixed.json?.records ?? []).some((r) => r.id && r.counterparty === "api.example.io") &&
+      !(mixed.json?.records ?? []).some((r) => r.counterparty !== r.counterparty.toLowerCase()),
+    `${mixed.json?.records?.length} rows`,
+  );
+
+  // 12. auth
   const badIngest = await fetch(`${BASE}/api/authorizations`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: "Bearer sl_" + "0".repeat(40) },

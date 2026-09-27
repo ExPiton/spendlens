@@ -1,10 +1,19 @@
-import { PolicyConfig, toPolicyConfig, PolicyFileSchema, type AuthorizationRecord } from "@/lib/contracts";
+import type { PolicyConfig, AuthorizationRecord } from "@/lib/contracts";
 import { classifyQuality } from "@/lib/engine/classifyQuality";
-import { PolicyEngine } from "./policy-engine";
+import { normalizeCounterparty } from "@/lib/counterparty";
+import { PolicyEngine, type PolicyStateStore } from "./policy-engine";
 import { AsyncLedgerQueue, registerAutoDrain, type LedgerSink } from "./queue";
 import { PolicyBlocked } from "./errors";
 import { PERMISSIVE_POLICY } from "./guard";
-import { load } from "js-yaml";
+import {
+  ControlPlane,
+  assertMainnetPolicy,
+  chainIdFromNetwork,
+  loadPolicyInput,
+  requestEscalation,
+  resolveServerUrl,
+  resolveSink,
+} from "./runtime";
 import { ARC } from "@/lib/arc";
 
 /**
@@ -20,9 +29,12 @@ import { ARC } from "@/lib/arc";
  * client is typed structurally).
  *
  *   import { GatewayClient } from "@circle-fin/x402-batching/client";
- *   import { guardGateway } from "@spendlens/sdk";
+ *   import { guardGateway, ARC, ARC_GATEWAY_CHAIN } from "@spendlens/sdk";
  *
- *   const client = new GatewayClient({ chain: "arcTestnet", privateKey });
+ *   // Resolves to testnet unless ARC_NETWORK=mainnet is set. Mainnet has no
+ *   // public RPC, so ARC.rpcUrl (from ARC_MAINNET_RPC_URL) must be passed
+ *   // through — chain: "arc" alone, without rpcUrl, fails.
+ *   const client = new GatewayClient({ chain: ARC_GATEWAY_CHAIN, privateKey, rpcUrl: ARC.rpcUrl });
  *   const pay = guardGateway(client, { agentId: "research-crawler-01" });
  *   const { data } = await pay.fetch("https://api.example.io/premium");
  */
@@ -95,12 +107,27 @@ export interface GatewayClientLike {
 
 export interface GuardGatewayOptions {
   agentId: string;
-  /** YAML string, preloaded PolicyConfig, or omitted for the permissive default. */
+  /**
+   * YAML text, a path to a `.yaml`/`.yml`/`.json` file, or a preloaded
+   * PolicyConfig. Omitted: the agent's dashboard policy is used (kept in
+   * sync live) when SPENDLENS_URL + SPENDLENS_API_KEY are set; otherwise the
+   * permissive default — which is refused on Arc mainnet.
+   */
   policy?: string | PolicyConfig;
   /** Telemetry sink URL, or `SPENDLENS_URL` from the environment. */
   sink?: LedgerSink;
   /** Bearer token for the ingest endpoint, or `SPENDLENS_API_KEY` from the env. */
   apiKey?: string;
+  /** Spendlens server for the kill switch / remote policy; defaults to the
+   *  URL sink or `SPENDLENS_URL`. */
+  serverUrl?: string;
+  /** Follow the dashboard's policy. Default: true when no local `policy`. */
+  remotePolicy?: boolean;
+  /** How often to re-check the kill switch / policy (ms, default 15000;
+   *  0 = only on first use and on ingest responses). */
+  syncIntervalMs?: number;
+  /** Persist budgets/baselines across restarts (e.g. FilePolicyStateStore). */
+  stateStore?: PolicyStateStore;
   /** Called on a `hold` verdict; return true to let the payment proceed. */
   escalationHandler?: (
     requirements: HookRequirements,
@@ -121,35 +148,16 @@ export interface GuardedGateway {
     },
   ): Promise<PayResult<T>>;
   engine: PolicyEngine;
-  /** Flushes buffered telemetry and stops the background timer — call
+  /** Re-checks the dashboard now (kill switch + remote policy). */
+  sync(): Promise<void>;
+  /** Flushes buffered telemetry and stops the background timers — call
    *  before a Ctrl+C or explicit `process.exit()`, which an automatic
    *  `beforeExit` drain can't cover (see `registerAutoDrain`). */
   drain(): Promise<void>;
 }
 
-function resolvePolicy(policy: GuardGatewayOptions["policy"]): PolicyConfig {
-  if (policy === undefined) return PERMISSIVE_POLICY;
-  if (typeof policy !== "string") return policy;
-  try {
-    return toPolicyConfig(PolicyFileSchema.parse(load(policy)));
-  } catch (err) {
-    throw new Error(
-      `guardGateway: invalid policy YAML: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
-}
-
 function envVal(name: string): string | undefined {
   return typeof process !== "undefined" && process.env ? process.env[name] : undefined;
-}
-
-function resolveSink(explicit: LedgerSink | undefined): LedgerSink | undefined {
-  if (explicit) return explicit;
-  const url = envVal("SPENDLENS_URL");
-  if (!url) return undefined;
-  return /\/api\/authorizations\/?$/.test(url)
-    ? url
-    : url.replace(/\/$/, "") + "/api/authorizations";
 }
 
 async function sha256Hex(text: string): Promise<string> {
@@ -165,53 +173,6 @@ async function sha256Hex(text: string): Promise<string> {
 
 const genId = () =>
   `auth_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-
-interface EscalationConfig {
-  webhook: string;
-  timeoutSeconds: number;
-  onTimeout: "allow" | "block" | "hold" | "alert";
-}
-
-/**
- * POSTs a `hold` challenge to the policy's escalation webhook and waits up to
- * `timeoutSeconds` for `{ approved: boolean }`. On any failure or timeout the
- * answer is `onTimeout === "allow"`. Spendlens's own `/api/escalate` speaks
- * this shape.
- */
-async function askEscalationWebhook(
-  escalation: EscalationConfig,
-  payload: {
-    agentId: string;
-    counterparty: string;
-    resource: string;
-    amountUsdc: number;
-    ruleHit: string | null;
-  },
-  apiKey?: string,
-): Promise<boolean> {
-  try {
-    const controller = new AbortController();
-    const t = setTimeout(
-      () => controller.abort(),
-      Math.max(1, escalation.timeoutSeconds) * 1000,
-    );
-    const res = await fetch(escalation.webhook, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
-      },
-      body: JSON.stringify(payload),
-      signal: controller.signal,
-    });
-    clearTimeout(t);
-    if (!res.ok) return escalation.onTimeout === "allow";
-    const data = (await res.json().catch(() => ({}))) as { approved?: boolean };
-    return data.approved === true;
-  } catch {
-    return escalation.onTimeout === "allow";
-  }
-}
 
 // `client.onBeforePaymentCreation` is an additive hook registry on the
 // GatewayClient itself, not something guardGateway owns exclusively — the
@@ -241,12 +202,38 @@ export function guardGateway(
   }
   wrappedClients.add(client);
 
-  const engine = new PolicyEngine(resolvePolicy(options.policy));
+  const label = "guardGateway";
+  const localPolicy = loadPolicyInput(options.policy, label);
   const sink = resolveSink(options.sink);
   const apiKey = options.apiKey ?? envVal("SPENDLENS_API_KEY");
+  const serverUrl = resolveServerUrl(options.serverUrl, sink);
+  const remotePolicy =
+    Boolean(serverUrl && apiKey) && (options.remotePolicy ?? localPolicy === undefined);
+  assertMainnetPolicy(label, localPolicy !== undefined, remotePolicy);
+
+  const engine = new PolicyEngine(localPolicy ?? PERMISSIVE_POLICY, options.stateStore);
+  const control =
+    serverUrl && apiKey
+      ? new ControlPlane({
+          serverUrl,
+          apiKey,
+          engine,
+          remotePolicy,
+          // No local policy to fall back on: block until the dashboard's arrives.
+          failClosed: localPolicy === undefined,
+          intervalMs: options.syncIntervalMs,
+          label,
+        })
+      : undefined;
+  control?.start();
+
   const queue = sink
     ? new AsyncLedgerQueue(sink, {
         headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined,
+        onResponse: (res) =>
+          control?.applyStatus(
+            res.status === 423 ? "paused" : res.headers.get("x-spendlens-agent-status"),
+          ),
       })
     : undefined;
   if (queue) registerAutoDrain(queue);
@@ -262,6 +249,7 @@ export function guardGateway(
     counterparty: string;
     amountMicroUsdc: number;
     resource: string;
+    chainId: number;
     blocked: boolean;
   };
   let pending: PendingState | null = null;
@@ -295,65 +283,71 @@ export function guardGateway(
       quality: null,
       settlementId: null,
       createdAt: nowIso,
+      policyHash: engine.getPolicyHash(),
+      policyVersion: engine.getPolicyVersion(),
       ...partial,
     };
     queue?.enqueue(full);
   };
 
   client.onBeforePaymentCreation(async ({ paymentRequired, selectedRequirements }) => {
-    const counterparty = selectedRequirements.payTo;
     const amountMicroUsdc = Math.round(Number(selectedRequirements.amount));
     const resource = paymentRequired.resource?.url || currentUrl || "";
+    const chainId = chainIdFromNetwork(selectedRequirements.network) ?? ARC.chainId;
     const taskId = currentTaskId;
-    const verdict = await engine.evaluate({
+    const input = {
       agentId: options.agentId,
       taskId,
-      counterparty,
+      counterparty: selectedRequirements.payTo,
       amount: amountMicroUsdc / 1_000_000,
       resource,
       now: Date.now(),
-    });
-    pending = { verdict, counterparty, amountMicroUsdc, resource, blocked: false };
+    };
+    const verdict = await engine.evaluate(input);
+    // The engine canonicalizes the address (lowercase) — record that form so
+    // the ledger joins cleanly against Gateway's lowercase transfer rows.
+    const counterparty = verdict.counterparty;
+    pending = { verdict, counterparty, amountMicroUsdc, resource, chainId, blocked: false };
+    const base = {
+      counterparty,
+      resource,
+      amountMicroUsdc,
+      chainId,
+      ruleHit: verdict.ruleHit,
+      policyHash: verdict.policyHash,
+      policyVersion: verdict.policyVersion,
+    };
 
     if (verdict.decision === "block") {
       pending.blocked = true;
-      record(
-        { counterparty, resource, amountMicroUsdc, decision: "block", ruleHit: verdict.ruleHit },
-        taskId,
-      );
+      record({ ...base, decision: "block" }, taskId);
       return { abort: true, reason: verdict.ruleHit ?? "policy.block" };
     }
     if (verdict.decision === "hold") {
-      let approved = false;
+      let approved: boolean;
       if (options.escalationHandler) {
         approved = await options.escalationHandler(selectedRequirements, verdict.ruleHit);
-      } else if (verdict.escalation?.webhook) {
-        approved = await askEscalationWebhook(
+      } else {
+        ({ approved } = await requestEscalation(
           verdict.escalation,
           {
             agentId: options.agentId,
+            taskId,
             counterparty,
             resource,
             amountUsdc: amountMicroUsdc / 1_000_000,
             ruleHit: verdict.ruleHit,
           },
-          apiKey,
-        );
+          { apiKey },
+        ));
       }
       if (!approved) {
         pending.blocked = true;
-        record(
-          {
-            counterparty,
-            resource,
-            amountMicroUsdc,
-            decision: "hold_denied",
-            ruleHit: verdict.ruleHit,
-          },
-          taskId,
-        );
+        record({ ...base, decision: "hold_denied" }, taskId);
         return { abort: true, reason: verdict.ruleHit ?? "policy.hold_denied" };
       }
+      // Approved → it will be paid, so it counts against every budget.
+      engine.recordHoldApproved(input);
     }
   });
 
@@ -391,6 +385,8 @@ export function guardGateway(
     },
   ): Promise<PayResult<T>> {
     const taskId = opts?.taskId ?? null;
+    // First use: pick up the kill switch / dashboard policy before paying.
+    await control?.ready();
     pending = null;
     currentTaskId = taskId;
     currentUrl = url;
@@ -466,6 +462,7 @@ export function guardGateway(
         status: res?.status ?? (settledButUnparseable ? 200 : 504),
         bodyBytes,
         latencyMs,
+        body: bodyText,
       },
       p.verdict.qualityRules,
     );
@@ -475,9 +472,12 @@ export function guardGateway(
         counterparty: p.counterparty,
         resource: url,
         amountMicroUsdc: res ? Number(res.amount) : p.amountMicroUsdc,
+        chainId: p.chainId,
         decision:
           p.verdict.decision === "hold" ? "hold_approved" : "allow",
         ruleHit: p.verdict.ruleHit,
+        policyHash: p.verdict.policyHash,
+        policyVersion: p.verdict.policyVersion,
         httpStatus: res?.status ?? (settledButUnparseable ? 200 : null),
         latencyMs,
         bodyBytes,
@@ -500,62 +500,140 @@ export function guardGateway(
     }) as PayResult<T>;
   }
 
-  return { fetch: fetchImpl, engine, drain: () => queue?.drainAndStop() ?? Promise.resolve() };
+  return {
+    fetch: fetchImpl,
+    engine,
+    sync: () => control?.sync() ?? Promise.resolve(),
+    drain: async () => {
+      control?.stop();
+      await queue?.drainAndStop();
+    },
+  };
 }
 
-// ── reconcileFromGateway ────────────────────────────────────────────────────
+// ── reconciliation sources ──────────────────────────────────────────────────
 
 export interface SettlementEntry {
   counterparty: string;
   chainAmountMicroUsdc: number;
   settlementId?: string | null;
+  /** Arc chain the transfers settled on. */
+  chainId?: number | null;
 }
 
+/** Transfers Circle reports as `failed` never moved money; everything else
+ *  (`received` → `batched` → `confirmed` → `completed`) is a signed
+ *  authorization that has settled or will — exactly what reconciliation
+ *  must account for. */
+const COUNTED_TRANSFER_STATUSES = new Set(["received", "batched", "confirmed", "completed"]);
+
+function rollUp(transfers: GatewayTransfer[], chainId: number | null): SettlementEntry[] {
+  const byCp = new Map<string, { micro: number; lastId: string }>();
+  for (const t of transfers) {
+    if (!COUNTED_TRANSFER_STATUSES.has(String(t.status).toLowerCase())) continue;
+    // Gateway returns `amount` as a string of atomic USDC units (6 decimals)
+    // — e.g. "10000" for $0.01 — and addresses in lowercase; normalize
+    // anyway so a future casing change can't split one counterparty in two.
+    const micro = Math.round(Number(t.amount));
+    const cp = normalizeCounterparty(t.toAddress);
+    const cur = byCp.get(cp) ?? { micro: 0, lastId: t.id };
+    cur.micro += Number.isFinite(micro) ? micro : 0;
+    cur.lastId = t.id;
+    byCp.set(cp, cur);
+  }
+  return [...byCp].map(([counterparty, v]) => ({
+    counterparty,
+    chainAmountMicroUsdc: v.micro,
+    settlementId: v.lastId,
+    chainId,
+  }));
+}
+
+/** A page cursor that stops advancing would otherwise spin forever. 10,000
+ *  pages of 100 is 1M transfers — far past one reconciliation pass. */
+const MAX_PAGES = 10_000;
+
 /**
- * Reads the agent wallet's on-chain settlement history from Circle Gateway
+ * Reads the agent wallet's settlement history from Circle Gateway
  * (`GatewayClient.searchTransfers`) and rolls it up per counterparty — ready to
- * POST to `/api/reconciliation/settlements`. This is the real Arc settlement
- * source the reconciliation screen compares the local ledger against.
+ * POST to `/api/reconciliation/settlements`. `failed` transfers are skipped.
+ * Prefer `fetchWalletSettlements`, which needs only the wallet address.
  */
 export async function reconcileFromGateway(
   client: GatewayClientLike,
-  opts?: { fromAddress?: string; since?: Date },
+  opts?: { fromAddress?: string; since?: Date; until?: Date },
 ): Promise<SettlementEntry[]> {
   if (typeof client.searchTransfers !== "function") {
     throw new Error("reconcileFromGateway: client has no searchTransfers()");
   }
   const from = opts?.fromAddress ?? client.address;
-  const byCp = new Map<string, { micro: number; lastId: string }>();
+  const transfers: GatewayTransfer[] = [];
   let pageAfter: string | undefined;
-  // A page cursor that stops advancing (a bug on the API side, or one that
-  // hands back the same token) would otherwise spin this forever. 10,000
-  // pages of 100 is 1M transfers — far beyond anything this reconciliation
-  // pass is meant to process in one call.
-  const MAX_PAGES = 10_000;
-
   for (let page = 0; page < MAX_PAGES; page++) {
-    const { transfers, pagination } = await client.searchTransfers({
+    const { transfers: batch, pagination } = await client.searchTransfers({
       from,
       startDate: opts?.since?.toISOString(),
+      endDate: opts?.until?.toISOString(),
       pageSize: 100,
       pageAfter,
     });
-    for (const t of transfers) {
-      // Gateway `searchTransfers` returns `amount` as a string of atomic USDC
-      // units (6 decimals) — e.g. "10000" for $0.01.
-      const micro = Math.round(Number(t.amount));
-      const cur = byCp.get(t.toAddress) ?? { micro: 0, lastId: t.id };
-      cur.micro += Number.isFinite(micro) ? micro : 0;
-      cur.lastId = t.id;
-      byCp.set(t.toAddress, cur);
-    }
+    transfers.push(...batch);
     if (!pagination?.pageAfter || pagination.pageAfter === pageAfter) break;
     pageAfter = pagination.pageAfter;
   }
+  return rollUp(transfers, ARC.chainId);
+}
 
-  return [...byCp].map(([counterparty, v]) => ({
-    counterparty,
-    chainAmountMicroUsdc: v.micro,
-    settlementId: v.lastId,
-  }));
+/**
+ * Keyless settlement source. Circle Gateway's `/v1/x402/transfers` is
+ * queryable by address alone, so reconciliation never needs the agent's
+ * private key — the Spendlens server runs this on a schedule for every agent
+ * with a wallet address on file, and `npm run reconcile:arc` uses it with
+ * just `AGENT_ADDRESS`.
+ */
+export async function fetchWalletSettlements(opts: {
+  address: string;
+  /** Defaults to the configured Arc network (ARC_NETWORK). */
+  network?: { chainId: number; gatewayApi: string };
+  since?: Date;
+  until?: Date;
+  fetchFn?: typeof fetch;
+}): Promise<SettlementEntry[]> {
+  const net = opts.network ?? ARC;
+  const doFetch = opts.fetchFn ?? fetch;
+  const transfers: GatewayTransfer[] = [];
+  let url: string | null = (() => {
+    const q = new URLSearchParams({
+      from: normalizeCounterparty(opts.address),
+      network: `eip155:${net.chainId}`,
+      pageSize: "100",
+    });
+    if (opts.since) q.set("startDate", opts.since.toISOString());
+    if (opts.until) q.set("endDate", opts.until.toISOString());
+    return `${net.gatewayApi.replace(/\/$/, "")}/v1/x402/transfers?${q}`;
+  })();
+  const seen = new Set<string>();
+
+  for (let page = 0; url && page < MAX_PAGES; page++) {
+    if (seen.has(url)) break;
+    seen.add(url);
+    const res = await doFetch(url, { headers: { accept: "application/json" } });
+    if (!res.ok) {
+      throw new Error(`Gateway transfers query failed (${res.status}): ${await res.text().catch(() => "")}`);
+    }
+    const body = (await res.json()) as { transfers?: GatewayTransfer[] };
+    transfers.push(...(body.transfers ?? []));
+    url = nextLink(res.headers.get("link"));
+  }
+  return rollUp(transfers, net.chainId);
+}
+
+/** RFC 5988 `Link: <…>; rel="next"` → the next page URL. */
+function nextLink(header: string | null): string | null {
+  if (!header) return null;
+  const re = /<([^>]+)>\s*;\s*rel="([^"]+)"/g;
+  for (let m = re.exec(header); m; m = re.exec(header)) {
+    if (m[2] === "next") return m[1];
+  }
+  return null;
 }

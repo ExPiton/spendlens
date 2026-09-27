@@ -2,7 +2,7 @@ import "server-only";
 import { cache } from "react";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
-import { auth } from "@/lib/auth";
+import { auth, emailVerificationRequired } from "@/lib/auth";
 
 /**
  * Data Access Layer for auth. Every server component / route handler / action
@@ -24,10 +24,13 @@ export async function requireUser() {
   return session;
 }
 
-/** The gate every dashboard surface uses. Currently identical to
- *  `requireUser()` — e-mail verification is not enforced. Kept as a distinct
- *  name so re-enabling verification is a one-place change: restore the
- *  `emailVerified` check here (and the two auth-config flags). */
+/** The gate every dashboard surface uses: signed in, and — whenever
+ *  verification is required (see `emailVerificationRequired`) — with a
+ *  verified e-mail address. */
 export async function requireVerifiedUser() {
-  return requireUser();
+  const session = await requireUser();
+  if (emailVerificationRequired && !session.user.emailVerified) {
+    redirect(`/verify-email`);
+  }
+  return session;
 }

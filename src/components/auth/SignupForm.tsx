@@ -22,7 +22,7 @@ export function SignupForm() {
     setPending(true);
     setError(null);
 
-    const { error } = await authClient.signUp.email({
+    const { data, error } = await authClient.signUp.email({
       name: name.trim() || email.split("@")[0],
       email,
       password,
@@ -34,7 +34,12 @@ export function SignupForm() {
       setPending(false);
       return;
     }
-    // Verification is not required — signup signs the user in.
+    // With e-mail verification required, signup creates no session (token
+    // is null) — the user has to click the link we just sent first.
+    if (!data?.token) {
+      router.push(`/verify-email?email=${encodeURIComponent(email)}`);
+      return;
+    }
     router.push("/dashboard");
     router.refresh();
   }

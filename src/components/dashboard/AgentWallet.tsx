@@ -8,12 +8,14 @@ const initial: ActionState = {};
 export function AgentWallet({
   agentId,
   walletAddress,
+  isMainnet,
   faucetUrl,
   explorerUrl,
   arcLabel,
 }: {
   agentId: string;
   walletAddress: string | null;
+  isMainnet: boolean;
   faucetUrl: string;
   explorerUrl: string;
   arcLabel: string;
@@ -86,11 +88,19 @@ export function AgentWallet({
         {state.ok && <p className="text-signal">Saved.</p>}
 
         <p className="text-muted">
-          Fund it with testnet USDC at{" "}
-          <a href={faucetUrl} target="_blank" rel="noreferrer" className="underline hover:text-fg">
-            {faucetUrl.replace(/^https?:\/\//, "")}
-          </a>
-          , then reconcile with{" "}
+          {isMainnet ? (
+            <>Fund it by sending real USDC on Arc mainnet to this address</>
+          ) : (
+            <>
+              Fund it with testnet USDC at{" "}
+              <a href={faucetUrl} target="_blank" rel="noreferrer" className="underline hover:text-fg">
+                {faucetUrl.replace(/^https?:\/\//, "")}
+              </a>
+            </>
+          )}
+          . Spendlens then reconciles this wallet against its Circle Gateway settlements
+          automatically every few minutes — by address only, no private key — and halts the
+          agent if it finds spend the ledger never recorded. Run it now with{" "}
           <code className="rounded-xs bg-surface-2 px-1 py-0.5 font-mono">
             npm run reconcile:arc
           </code>

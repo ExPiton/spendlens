@@ -2,7 +2,7 @@ import "server-only";
 import { and, asc, eq } from "drizzle-orm";
 import { db } from "./index";
 import { agent as agentTable, policy as policyTable } from "./schema";
-import { defaultPolicyYaml, parsePolicyYaml } from "@/lib/policy-file";
+import { defaultEscalationWebhook, defaultPolicyYaml, parsePolicyYaml } from "@/lib/policy-file";
 import { SLUG_RE, normalizeSlug } from "@/lib/slug";
 
 export { normalizeSlug };
@@ -77,7 +77,7 @@ export async function createAgent(
     .limit(1);
   if (dupe) throw new Error(`You already have an agent called "${slug}".`);
 
-  const raw = defaultPolicyYaml(slug);
+  const raw = defaultPolicyYaml(slug, defaultEscalationWebhook());
   const { config } = parsePolicyYaml(raw);
 
   return db.transaction(async (tx) => {

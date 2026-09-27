@@ -1,7 +1,7 @@
 import "server-only";
 import { NextResponse } from "next/server";
 import { headers } from "next/headers";
-import { auth } from "@/lib/auth";
+import { auth, emailVerificationRequired } from "@/lib/auth";
 import { resolveApiKey, touchApiKey, type ResolvedApiKey } from "@/lib/db/api-keys";
 
 /** Session-authenticated route handlers. Returns the user id or a 401 Response. */
@@ -11,6 +11,9 @@ export async function requireSessionUser(): Promise<
   const session = await auth.api.getSession({ headers: await headers() });
   if (!session?.user) {
     return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+  }
+  if (emailVerificationRequired && !session.user.emailVerified) {
+    return NextResponse.json({ error: "E-mail address not verified" }, { status: 403 });
   }
   return { userId: session.user.id };
 }

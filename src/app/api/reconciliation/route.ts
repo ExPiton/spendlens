@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { listReconciliation, recomputeReconciliation } from "@/lib/db/repository";
+import { reconcileUser } from "@/lib/reconcile";
 import { requireSessionUser, isResponse } from "@/lib/auth/api";
 
 export async function GET() {
@@ -29,17 +30,22 @@ export async function GET() {
   }
 }
 
-/** Recomputes the ledger side of every counterparty and re-classifies. */
+/** "Rescan": pulls fresh settlements from Circle Gateway for every agent
+ *  with a wallet address (keyless), then re-derives the ledger side of every
+ *  row and re-classifies. */
 export async function POST() {
   const auth = await requireSessionUser();
   if (isResponse(auth)) return auth;
 
   try {
+    const gateway = await reconcileUser(auth.userId);
     const count = await recomputeReconciliation(auth.userId);
     return NextResponse.json({
       success: true,
       timestamp: new Date().toISOString(),
       recordsChecked: count,
+      agentsReconciled: gateway.agents,
+      errors: gateway.errors,
     });
   } catch (err) {
     console.error("[spendlens] POST /api/reconciliation failed:", err);

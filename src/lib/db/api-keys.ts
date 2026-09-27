@@ -108,6 +108,8 @@ export interface ResolvedApiKey {
   userId: string;
   agentId: string;
   agentSlug: string;
+  /** The dashboard kill switch state of the key's agent. */
+  agentStatus: "active" | "paused";
 }
 
 /** Looks up an active key by its plaintext and returns the tenant + agent it
@@ -145,6 +147,7 @@ export async function resolveApiKey(
     userId: row.userId,
     agentId: row.agentId,
     agentSlug: row.agentSlug,
+    agentStatus: row.agentStatus === "paused" ? "paused" : "active",
   };
 }
 

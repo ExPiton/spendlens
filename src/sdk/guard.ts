@@ -1,10 +1,18 @@
-import { PolicyConfig, toPolicyConfig, PolicyFileSchema, type AuthorizationRecord, type Quality } from "@/lib/contracts";
+import type { PolicyConfig, AuthorizationRecord, Quality } from "@/lib/contracts";
 import { classifyQuality } from "@/lib/engine/classifyQuality";
-import { PolicyEngine } from "./policy-engine";
+import { PolicyEngine, type PolicyStateStore } from "./policy-engine";
 import { parsePaymentChallenge, type PaymentChallenge } from "./challenge";
 import { AsyncLedgerQueue, registerAutoDrain, type LedgerSink } from "./queue";
-import { PolicyBlocked, EscalationDenied } from "./errors";
-import { load } from "js-yaml";
+import { PolicyBlocked, EscalationDenied, SpendlensError } from "./errors";
+import {
+  ControlPlane,
+  assertMainnetPolicy,
+  isMainnet,
+  loadPolicyInput,
+  requestEscalation,
+  resolveServerUrl,
+  resolveSink,
+} from "./runtime";
 
 export interface PaymentAuthorization {
   paymentHeader: string; // e.g. "Bearer ..." or "Signature ..."
@@ -17,9 +25,11 @@ export type SignerFn = (challenge: PaymentChallenge) => Promise<PaymentAuthoriza
 export interface GuardOptions {
   agentId: string;
   /**
-   * The agent's policy — a YAML string, a preloaded `PolicyConfig`, or omitted
-   * for a permissive "record everything, block nothing" default (fine to start
-   * with; tighten from the Spendlens dashboard).
+   * The agent's policy — YAML text, a path to a `.yaml`/`.yml`/`.json` file
+   * (`"./policy.yaml"`), or a preloaded `PolicyConfig`. Omitted: the agent's
+   * dashboard policy is used and kept in sync live when SPENDLENS_URL +
+   * SPENDLENS_API_KEY are set; otherwise a permissive "record everything,
+   * block nothing" default — testnet only, refused on Arc mainnet.
    */
   policy?: string | PolicyConfig;
   /**
@@ -42,6 +52,15 @@ export interface GuardOptions {
   signer?: SignerFn;
   fetchFn?: typeof fetch;
   escalationHandler?: (challenge: PaymentChallenge, ruleHit: string | null) => Promise<boolean>;
+  /** Spendlens server for the kill switch / remote policy; defaults to the
+   *  URL sink or `SPENDLENS_URL`. */
+  serverUrl?: string;
+  /** Follow the dashboard's policy. Default: true when no local `policy`. */
+  remotePolicy?: boolean;
+  /** Kill-switch / policy re-check interval in ms (default 15000). */
+  syncIntervalMs?: number;
+  /** Persist budgets/baselines across restarts (e.g. FilePolicyStateStore). */
+  stateStore?: PolicyStateStore;
 }
 
 /** Permissive default: every counterparty allowed, generous limits, no holds.
@@ -72,7 +91,7 @@ export const PERMISSIVE_POLICY: PolicyConfig = {
     maxLatencyMs: 10000,
   },
   escalation: {
-    webhook: "https://example.com/spendlens-escalation",
+    webhook: null,
     timeoutSeconds: 30,
     onTimeout: "block",
   },
@@ -82,15 +101,6 @@ function envValue(name: string): string | undefined {
   return typeof process !== "undefined" && process.env
     ? process.env[name]
     : undefined;
-}
-
-function resolveSink(explicit: LedgerSink | undefined): LedgerSink | undefined {
-  if (explicit) return explicit;
-  const url = envValue("SPENDLENS_URL");
-  if (!url) return undefined;
-  return /\/api\/authorizations\/?$/.test(url)
-    ? url
-    : url.replace(/\/$/, "") + "/api/authorizations";
 }
 
 let warnedMockSigner = false;
@@ -128,6 +138,7 @@ export class SpendlensGuard {
   private customFetch: typeof fetch;
   private escalationHandler?: (challenge: PaymentChallenge, ruleHit: string | null) => Promise<boolean>;
   private apiKey?: string;
+  private control?: ControlPlane;
 
   constructor(options: GuardOptions) {
     this.agentId = options.agentId;
@@ -135,31 +146,53 @@ export class SpendlensGuard {
     this.signer = options.signer;
     this.escalationHandler = options.escalationHandler;
 
-    let config: PolicyConfig;
-    if (options.policy === undefined) {
-      config = PERMISSIVE_POLICY;
-    } else if (typeof options.policy === "string") {
-      try {
-        const parsed = load(options.policy);
-        const validated = PolicyFileSchema.parse(parsed);
-        config = toPolicyConfig(validated);
-      } catch (err) {
-        throw new Error(`Failed to parse policy YAML: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    } else {
-      config = options.policy;
-    }
-
-    this.policyEngine = new PolicyEngine(config);
-
+    const label = "guard";
+    const localPolicy = loadPolicyInput(options.policy, label);
     const sink = resolveSink(options.sink);
     this.apiKey = options.apiKey ?? envValue("SPENDLENS_API_KEY");
+    const serverUrl = resolveServerUrl(options.serverUrl, sink);
+    const remotePolicy =
+      Boolean(serverUrl && this.apiKey) && (options.remotePolicy ?? localPolicy === undefined);
+    assertMainnetPolicy(label, localPolicy !== undefined, remotePolicy);
+    if (isMainnet() && !this.signer) {
+      throw new SpendlensError(
+        "guard: a `signer` is required on Arc mainnet — the mock signature is testnet-only. " +
+          "Pass `signer: createLocalSigner(key)` or your own, or use guardGateway() with Circle's GatewayClient.",
+      );
+    }
+
+    this.policyEngine = new PolicyEngine(localPolicy ?? PERMISSIVE_POLICY, options.stateStore);
+
+    if (serverUrl && this.apiKey) {
+      this.control = new ControlPlane({
+        serverUrl,
+        apiKey: this.apiKey,
+        engine: this.policyEngine,
+        remotePolicy,
+        failClosed: localPolicy === undefined,
+        intervalMs: options.syncIntervalMs,
+        fetchFn: this.customFetch,
+        label,
+      });
+      this.control.start();
+    }
+
     if (sink) {
+      const control = this.control;
       this.queue = new AsyncLedgerQueue(sink, {
         headers: this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : undefined,
+        onResponse: (res) =>
+          control?.applyStatus(
+            res.status === 423 ? "paused" : res.headers.get("x-spendlens-agent-status"),
+          ),
       });
       registerAutoDrain(this.queue);
     }
+  }
+
+  /** Re-checks the dashboard now (kill switch + remote policy). */
+  public async sync(): Promise<void> {
+    await this.control?.sync();
   }
 
   public getEngine(): PolicyEngine {
@@ -174,6 +207,7 @@ export class SpendlensGuard {
    *  silently, since the timer is unref'd specifically so it never keeps a
    *  process alive on its own. */
   public async drain(): Promise<void> {
+    this.control?.stop();
     await this.queue?.drainAndStop();
   }
 
@@ -224,17 +258,29 @@ export class SpendlensGuard {
     const challenge = parsePaymentChallenge(probe.headers, bodyText);
     const amountUsdc = challenge.maxAmountRequired;
     const amountMicroUsdc = Math.round(amountUsdc * 1_000_000);
-    const counterparty = challenge.payTo;
+    if (!this.signer && isMainnet(challenge.chainId)) {
+      throw new SpendlensError(
+        "guard: refusing to answer an Arc mainnet 402 with the mock signature — pass a real `signer`.",
+      );
+    }
+
+    // First paid call: pick up the kill switch / dashboard policy first.
+    await this.control?.ready();
 
     // Step 3: Evaluate policy engine
-    const verdict = await this.policyEngine.evaluate({
+    const evalInput = {
       agentId: this.agentId,
       taskId,
-      counterparty,
+      counterparty: challenge.payTo,
       amount: amountUsdc,
       resource: urlStr,
       now: nowMs,
-    });
+    };
+    const verdict = await this.policyEngine.evaluate(evalInput);
+    // Canonical (lowercased) counterparty — what the ledger stores and the
+    // reconciliation joins on.
+    const counterparty = verdict.counterparty;
+    const policyStamp = { policyHash: verdict.policyHash, policyVersion: verdict.policyVersion };
 
     // Step 4a: Handle BLOCK decision
     if (verdict.decision === "block") {
@@ -257,6 +303,7 @@ export class SpendlensGuard {
         quality: null,
         settlementId: null,
         createdAt: nowIso,
+        ...policyStamp,
       };
       this.queue?.enqueue(record);
       throw new PolicyBlocked(verdict.ruleHit || "unknown_rule", {
@@ -268,39 +315,24 @@ export class SpendlensGuard {
     // Step 4b: Handle HOLD decision
     let finalDecision: "allow" | "hold_approved" = "allow";
     if (verdict.decision === "hold") {
-      let approved = false;
+      let approved: boolean;
+      let reason: "decided" | "timeout" | "error" = "decided";
       if (this.escalationHandler) {
         approved = await this.escalationHandler(challenge, verdict.ruleHit);
-      } else if (verdict.escalation.webhook) {
-        try {
-          const controller = new AbortController();
-          const timeout = setTimeout(() => controller.abort(), verdict.escalation.timeoutSeconds * 1000);
-          const escRes = await this.customFetch(verdict.escalation.webhook, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              // Spendlens's own /api/escalate requires this — without it
-              // every hold silently resolves to "denied" (a 401 response
-              // is not `.ok`, so `approved` stays false), which defeats
-              // the whole point of the escalation webhook.
-              ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
-            },
-            body: JSON.stringify({
-              agentId: this.agentId,
-              taskId,
-              challenge,
-              verdict,
-            }),
-            signal: controller.signal,
-          });
-          clearTimeout(timeout);
-          if (escRes.ok) {
-            const data = (await escRes.json()) as { approved?: boolean };
-            approved = data.approved === true;
-          }
-        } catch {
-          approved = verdict.escalation.onTimeout === "allow";
-        }
+      } else {
+        ({ approved, reason } = await requestEscalation(
+          verdict.escalation,
+          {
+            agentId: this.agentId,
+            taskId,
+            counterparty,
+            resource: urlStr,
+            amountUsdc,
+            ruleHit: verdict.ruleHit,
+            nonce: challenge.nonce ?? null,
+          },
+          { apiKey: this.apiKey, fetchFn: this.customFetch },
+        ));
       }
 
       if (!approved) {
@@ -323,10 +355,13 @@ export class SpendlensGuard {
           quality: null,
           settlementId: null,
           createdAt: nowIso,
+          ...policyStamp,
         };
         this.queue?.enqueue(record);
-        throw new EscalationDenied("rejected");
+        throw new EscalationDenied(reason === "timeout" ? "timeout" : "rejected");
       }
+      // Approved → it will be paid, so it counts against every budget.
+      this.policyEngine.recordHoldApproved(evalInput);
       finalDecision = "hold_approved";
     }
 
@@ -380,10 +415,11 @@ export class SpendlensGuard {
     const resClone = res.clone();
     let bodyBytes = 0;
     let bodySha256 = "";
+    let responseText = "";
     try {
-      const text = await resClone.text();
-      bodyBytes = new TextEncoder().encode(text).length;
-      bodySha256 = await computeSha256(text);
+      responseText = await resClone.text();
+      bodyBytes = new TextEncoder().encode(responseText).length;
+      bodySha256 = await computeSha256(responseText);
     } catch {
       // empty
     }
@@ -394,6 +430,7 @@ export class SpendlensGuard {
         status: res.status,
         bodyBytes,
         latencyMs,
+        body: responseText,
       },
       verdict.qualityRules,
     );
@@ -417,6 +454,7 @@ export class SpendlensGuard {
       quality,
       settlementId: null,
       createdAt: nowIso,
+      ...policyStamp,
     };
 
     this.queue?.enqueue(record);

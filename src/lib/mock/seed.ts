@@ -4,7 +4,7 @@ import type {
   Quality,
   ReconciliationRecord,
 } from "@/lib/contracts";
-import { classifyReconciliation, sumAllowedLedgerAmount } from "@/lib/engine";
+import { classifyReconciliation, sumSpentLedgerAmount } from "@/lib/engine";
 import { Rng } from "./rng";
 
 /**
@@ -16,6 +16,8 @@ import { Rng } from "./rng";
  */
 
 const SEED = 20260812;
+/** Demo rows are Arc testnet rows. */
+const DEMO_CHAIN_ID = 5042002;
 const TZ = "Z"; // every timestamp this module produces is UTC
 const PERIOD_DAYS = 12;
 const PERIOD_START = `2026-08-01T00:00:00.000${TZ}`;
@@ -278,7 +280,7 @@ function buildRecord(args: BuildRecordArgs): AuthorizationRecord {
     decision,
     ruleHit,
     nonce: hasResponse ? rng.hex(32) : null,
-    chainId: null,
+    chainId: DEMO_CHAIN_ID,
     httpStatus: hasResponse ? statusForQuality(rng, quality!) : null,
     latencyMs: hasResponse ? latencyForQuality(rng, quality!) : null,
     bodyBytes: hasResponse ? bodyBytesForQuality(rng, quality!) : null,
@@ -323,7 +325,7 @@ function buildIncidentBurst(rng: Rng, nextId: () => string): AuthorizationRecord
       decision: "block",
       ruleHit: "counterparties.mode",
       nonce: null,
-      chainId: null,
+      chainId: DEMO_CHAIN_ID,
       httpStatus: null,
       latencyMs: null,
       bodyBytes: null,
@@ -414,7 +416,7 @@ function buildSpecExampleRows(nextId: () => string, afterEpochMs: number): Autho
       decision: row.decision,
       ruleHit: row.ruleHit,
       nonce: hasResponse ? `spec0${i}`.padEnd(32, "0") : null,
-      chainId: null,
+      chainId: DEMO_CHAIN_ID,
       httpStatus: hasResponse ? 200 : null,
       latencyMs: hasResponse ? 180 + i * 35 : null,
       bodyBytes: hasResponse ? (row.quality === "empty" ? 0 : 512) : null,
@@ -483,6 +485,9 @@ export function generateAuthorizations(): AuthorizationRecord[] {
 const TOLERANCE_MICRO_USDC = 50; // 0.00005 USDC — absorbs rounding
 /** Scenario C stand-in: a counterparty where the chain shows a payment the ledger never recorded — wallet policy wasn't violated, only reconciliation catches it. */
 const CRITICAL_DEMO_COUNTERPARTY = "sms.notify.io";
+/** The flagship demo agent owns the Scenario-C divergence. */
+const CRITICAL_DEMO_AGENT = "research-crawler-01";
+
 const PENDING_DEMO_COUNTERPARTIES = new Set([
   "stock.marketdata.io",
   "docs.docservice.io",
@@ -496,24 +501,27 @@ export function generateReconciliation(): ReconciliationRecord[] {
   const rng = new Rng(SEED + 1);
   const { start, end } = getPeriod();
 
-  const counterparties = new Set(authorizations.map((a) => a.counterparty));
-  counterparties.add(CRITICAL_DEMO_COUNTERPARTY);
+  // One row per (agent, counterparty) — the chain side is per agent wallet.
+  const pairs = new Set(authorizations.map((a) => `${a.agentId}\u0000${a.counterparty}`));
+  pairs.add(`${CRITICAL_DEMO_AGENT}\u0000${CRITICAL_DEMO_COUNTERPARTY}`);
 
   const records: ReconciliationRecord[] = [];
 
-  for (const counterparty of counterparties) {
-    const ledgerAmountMicroUsdc = sumAllowedLedgerAmount(
+  for (const pair of pairs) {
+    const [agentId, counterparty] = pair.split("\u0000");
+    const isCritical =
+      agentId === CRITICAL_DEMO_AGENT && counterparty === CRITICAL_DEMO_COUNTERPARTY;
+    const ledgerAmountMicroUsdc = sumSpentLedgerAmount(
       authorizations,
       counterparty,
       start,
       end,
+      { agentId },
     );
-    if (ledgerAmountMicroUsdc === 0 && counterparty !== CRITICAL_DEMO_COUNTERPARTY) {
-      continue;
-    }
+    if (ledgerAmountMicroUsdc === 0 && !isCritical) continue;
 
     let chainAmountMicroUsdc: number;
-    if (counterparty === CRITICAL_DEMO_COUNTERPARTY) {
+    if (isCritical) {
       chainAmountMicroUsdc = ledgerAmountMicroUsdc + 350_000; // +0.35 USDC phantom settlement
     } else if (PENDING_DEMO_COUNTERPARTIES.has(counterparty)) {
       chainAmountMicroUsdc = Math.max(0, ledgerAmountMicroUsdc - rng.int(400, 4000));
@@ -528,6 +536,8 @@ export function generateReconciliation(): ReconciliationRecord[] {
     );
 
     records.push({
+      agentId,
+      chainId: DEMO_CHAIN_ID,
       counterparty,
       periodStart: start,
       periodEnd: end,

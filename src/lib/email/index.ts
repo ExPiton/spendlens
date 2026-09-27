@@ -10,7 +10,21 @@ export interface SendEmailInput {
 
 const FROM = process.env.EMAIL_FROM ?? "Spendlens <no-reply@localhost>";
 
-function renderHtml({ heading, body, cta }: SendEmailInput): string {
+/** Alert e-mails carry agent-controlled text (a 402's resource URL, a
+ *  counterparty) — escape everything interpolated into the HTML. */
+function esc(v: string): string {
+  return v
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function renderHtml(input: SendEmailInput): string {
+  const heading = esc(input.heading);
+  const body = esc(input.body).replace(/\n/g, "<br>");
+  const cta = input.cta ? { label: esc(input.cta.label), url: esc(input.cta.url) } : undefined;
   const button = cta
     ? `<p style="margin:28px 0"><a href="${cta.url}" style="background:#111;color:#fff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:600;display:inline-block">${cta.label}</a></p>
        <p style="color:#666;font-size:13px;word-break:break-all">Or paste this link into your browser:<br>${cta.url}</p>`
@@ -69,6 +83,11 @@ async function sendViaSmtp(input: SendEmailInput): Promise<void> {
     html: renderHtml(input),
     text: renderText(input),
   });
+}
+
+/** True when a real e-mail provider is configured. */
+export function isEmailConfigured(): boolean {
+  return Boolean(process.env.RESEND_API_KEY || process.env.SMTP_HOST);
 }
 
 /**

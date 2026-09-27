@@ -12,6 +12,8 @@ budgets:
     limit_usdc: 2.00
   - scope: day
     limit_usdc: 20.00
+  - scope: month
+    limit_usdc: 400.00
 
 per_call:
   max_usdc: 0.05
@@ -36,11 +38,22 @@ anomaly:
   new_counterparty_rate:
     max_per_hour: 5
     action: alert
+  # Sudden concentration of calls onto one counterparty (entropy of the
+  # counterparty mix over the window drops by more than max_drop).
+  counterparty_entropy:
+    window_minutes: 60
+    min_calls: 50
+    max_drop: 0.6
+    action: alert
 
 quality:
   failure_status_codes: [402, 429, 500, 502, 503, 504]
   empty_body_is_failure: true
-  json_schema: "./schemas/observation.json"
+  # Inline JSON Schema the response body must satisfy, else quality =
+  # schema_fail (paid for, but not what was ordered).
+  json_schema:
+    type: object
+    required: [data]
   max_latency_ms: 4000
 
 escalation:

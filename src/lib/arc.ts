@@ -13,7 +13,11 @@ export interface ArcNetwork {
   chainId: number;
   /** viem/x402 network id */
   eip155: string;
-  rpcUrl: string;
+  /** Undefined on mainnet unless `ARC_MAINNET_RPC_URL` is set — Arc mainnet
+   *  has no public RPC, and passing `undefined` through to `GatewayClient`
+   *  makes Circle's SDK throw its own explicit "pass a private RPC" error
+   *  instead of failing later on a DNS lookup for a made-up hostname. */
+  rpcUrl: string | undefined;
   explorerUrl: string;
   /** ERC-20 USDC (6 decimals). Native gas is the same funds at 18 decimals. */
   usdcAddress: `0x${string}`;
@@ -46,14 +50,16 @@ export const ARC_MAINNET: ArcNetwork = {
   network: "mainnet",
   chainId: 5042,
   eip155: "eip155:5042",
-  rpcUrl: process.env.ARC_MAINNET_RPC_URL ?? "https://rpc.arc.network",
+  rpcUrl: process.env.ARC_MAINNET_RPC_URL || undefined,
   explorerUrl: "https://arcscan.app",
   usdcAddress: "0x3600000000000000000000000000000000000000",
   gatewayWallet: "0x77777777Dcc4d5A8B6E418Fd04D8997ef11000eE",
   gatewayMinter: "0x2222222d7164433c4C09B0b0D809a9b52C04C205",
   gatewayApi: "https://gateway-api.circle.com",
   gatewayDomain: 26,
-  faucetUrl: "https://faucet.circle.com",
+  /** No faucet on mainnet — real USDC only. Kept as a field for type parity
+   *  with ARC_TESTNET; UI must check `network === "mainnet"` before using it. */
+  faucetUrl: "",
 };
 
 export const ARC: ArcNetwork =

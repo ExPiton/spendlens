@@ -23,11 +23,11 @@ describe("FilePolicyStateStore", () => {
     const s1 = new FilePolicyStateStore(path, 0);
     s1.recordCall(
       { agentId: "a1", taskId: "task-1", counterparty: "api.example.io", amount: 2, resource: "r" },
-      { decision: "allow", ruleHit: null, qualityRules: {} as never, escalation: {} as never },
+      { decision: "allow", ruleHit: null, qualityRules: {} as never, escalation: {} as never, counterparty: "api.example.io", policyHash: "", policyVersion: null },
     );
     s1.recordCall(
       { agentId: "a1", taskId: "task-1", counterparty: "api.example.io", amount: 1.5, resource: "r" },
-      { decision: "allow", ruleHit: null, qualityRules: {} as never, escalation: {} as never },
+      { decision: "allow", ruleHit: null, qualityRules: {} as never, escalation: {} as never, counterparty: "api.example.io", policyHash: "", policyVersion: null },
     );
     s1.flush();
     assert.ok(existsSync(path), "state file written");

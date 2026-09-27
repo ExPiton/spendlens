@@ -2,9 +2,9 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { haltAgentsForCounterpartiesAction } from "@/app/dashboard/actions";
+import { haltAgentsAction } from "@/app/dashboard/actions";
 
-export function HaltAffectedAgentsButton({ counterparties }: { counterparties: string[] }) {
+export function HaltAffectedAgentsButton({ agents }: { agents: string[] }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [busy, setBusy] = useState(false);
@@ -14,11 +14,11 @@ export function HaltAffectedAgentsButton({ counterparties }: { counterparties: s
     setBusy(true);
     setResult(null);
     try {
-      const { halted } = await haltAgentsForCounterpartiesAction(counterparties);
+      const { halted } = await haltAgentsAction(agents);
       setResult(
         halted.length > 0
           ? `Halted ${halted.length} agent${halted.length === 1 ? "" : "s"}: ${halted.join(", ")}`
-          : "No active agents were transacting with the flagged counterparties — nothing to halt.",
+          : "The affected agents are already halted.",
       );
       startTransition(() => router.refresh());
     } catch {

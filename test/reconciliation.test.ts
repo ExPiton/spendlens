@@ -2,7 +2,7 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import {
   classifyReconciliation,
-  sumAllowedLedgerAmount,
+  sumSpentLedgerAmount,
 } from "../src/lib/engine/reconciliation";
 import type { AuthorizationRecord } from "../src/lib/contracts";
 
@@ -29,7 +29,7 @@ describe("Arc Reconciliation Audit Engine", () => {
     assert.equal(res.deltaMicroUsdc, -200000);
   });
 
-  test("sumAllowedLedgerAmount only counts 'allow' decisions within the active period", () => {
+  test("sumSpentLedgerAmount counts spend decisions (allow + hold_approved) within the active period", () => {
     const periodStart = "2026-08-01T00:00:00.000+03:00";
     const periodEnd = "2026-08-13T00:00:00.000+03:00";
 
@@ -69,7 +69,34 @@ describe("Arc Reconciliation Audit Engine", () => {
       },
     ];
 
-    const sum = sumAllowedLedgerAmount(mockRecords, "api.example.io", periodStart, periodEnd);
+    const sum = sumSpentLedgerAmount(mockRecords, "api.example.io", periodStart, periodEnd);
     assert.equal(sum, 5000); // 3000 + 2000
+  });
+
+  test("an approved hold was paid, so it counts toward the ledger side", () => {
+    const sum = sumSpentLedgerAmount(
+      [
+        { counterparty: "api.example.io", decision: "allow", amountMicroUsdc: 1000, ts: "2026-08-05T00:00:00Z" },
+        { counterparty: "api.example.io", decision: "hold_approved", amountMicroUsdc: 4000, ts: "2026-08-05T00:01:00Z" },
+        { counterparty: "api.example.io", decision: "hold_denied", amountMicroUsdc: 9000, ts: "2026-08-05T00:02:00Z" },
+      ],
+      "api.example.io",
+      "2026-08-01T00:00:00Z",
+      "2026-09-01T00:00:00Z",
+    );
+    assert.equal(sum, 5000);
+  });
+
+  test("counterparties match case-insensitively and scope narrows by agent + chain", () => {
+    const addr = "0xAbCdEf0000000000000000000000000000000001";
+    const rows = [
+      { counterparty: addr, decision: "allow" as const, amountMicroUsdc: 100, ts: "2026-08-05T00:00:00Z", agentId: "a", chainId: 5042 },
+      { counterparty: addr.toLowerCase(), decision: "allow" as const, amountMicroUsdc: 200, ts: "2026-08-05T00:00:00Z", agentId: "a", chainId: 5042 },
+      { counterparty: addr, decision: "allow" as const, amountMicroUsdc: 400, ts: "2026-08-05T00:00:00Z", agentId: "b", chainId: 5042 },
+      { counterparty: addr, decision: "allow" as const, amountMicroUsdc: 800, ts: "2026-08-05T00:00:00Z", agentId: "a", chainId: 5042002 },
+    ];
+    const window = ["2026-08-01T00:00:00Z", "2026-09-01T00:00:00Z"] as const;
+    assert.equal(sumSpentLedgerAmount(rows, addr.toLowerCase(), ...window), 1500);
+    assert.equal(sumSpentLedgerAmount(rows, addr, ...window, { agentId: "a", chainId: 5042 }), 300);
   });
 });

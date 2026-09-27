@@ -132,3 +132,22 @@ The seller is a real `@circle-fin/x402-batching/server` middleware
 - SDK is served from the app (`/downloads/spendlens-sdk.tgz`), not published to npm.
 - `@circle-fin/x402-batching`, `viem` etc. are dev deps here (for the example
   seller + reconcile script); an agent project installs them itself.
+
+## Mainnet hardening — 2026-09-27
+
+Fixes for the mainnet-readiness review, each covered by a test:
+
+| Area | Change | Verified by |
+|---|---|---|
+| Counterparty case | canonical lowercase everywhere; denylist can't be bypassed by re-casing; ledger ⇄ Gateway joins match | `test/mainnet-hardening.test.ts`, `test/reconciliation.test.ts`, e2e |
+| Kill switch | a halted agent's guard blocks **before signing** (`agent.halted`) via `/api/sdk/config` + ingest header; halted ingest still recorded | unit + e2e |
+| Mainnet RPC | no guessed fallback URL (`rpc.arc.network` doesn't resolve) — Circle's SDK raises its own error | code + docs |
+| Approved holds | counted as spend in reconciliation, totals, waste and **budgets** | unit + DB integration |
+| Reconciliation | per (agent, chain, counterparty); `failed` transfers skipped; keyless server job with grace window, auto-halt + e-mail on critical | DB integration, real Gateway testnet read by address |
+| Mainnet rails | no permissive default, no mock signer on mainnet | unit (child process with `ARC_NETWORK=mainnet`) |
+| Proposal parity | policy hash on every row, monthly budgets, entropy signal, JSON-schema quality, human-in-the-loop escalation, remote policy, `policy: "./policy.yaml"`, SQLite self-hosted ledger, DB-enforced append-only ledger + daily hash-chained digests (optional Arc anchoring) | unit + DB integration + e2e |
+| Ops | e-mail verification when a provider is configured, Postgres rate-limit store, error reporting hook, nightly backups, pinned deps + SBOM + prod audit in CI, npm publish workflow | CI config, DB integration |
+
+Results on this run: `npm test` 99/99 · `npm run test:db` 12/12 · `npm run test:e2e` 30/30 · `scripts/verify-gaps.mjs` all ✓ · `npm run build` clean.
+
+Not done here (needs the owner): a funded **mainnet** smoke run (real USDC), publishing `@spendlens/sdk` to npm (push an `sdk-v*` tag with `NPM_TOKEN` set), and the independent security review.

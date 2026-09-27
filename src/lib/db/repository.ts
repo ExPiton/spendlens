@@ -1,5 +1,5 @@
 import "server-only";
-import { and, asc, desc, eq, gte, inArray, lt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "./index";
 import {
   agent as agentTable,
@@ -24,6 +24,7 @@ import {
   type ReconciliationStatus,
 } from "@/lib/contracts";
 import { classifyReconciliation } from "@/lib/engine";
+import { normalizeCounterparty } from "@/lib/counterparty";
 
 /**
  * Per-tenant data access over Postgres. Function signatures mirror the old
@@ -59,6 +60,8 @@ function toAuthorizationRecord(r: AuthorizationRow): AuthorizationRecord {
     quality: r.quality,
     settlementId: r.settlementId,
     createdAt: r.createdAt.toISOString(),
+    policyHash: r.policyHash,
+    policyVersion: r.policyVersion,
   });
 }
 
@@ -79,6 +82,11 @@ function scopeByAgent(userId: string, agentSlug?: string) {
     : eq(authTable.userId, userId);
 }
 
+/** Decisions that moved money — see `SPEND_DECISIONS` in the engine. An
+ *  approved hold was paid exactly like an allow, so every spend total counts
+ *  both; leaving `hold_approved` out under-reported spend and made each
+ *  approved hold look like unrecorded on-chain spend in reconciliation. */
+const SPEND_DECISIONS = sql`(${authTable.decision} in ('allow', 'hold_approved'))`;
 const BLOCKED_DECISIONS = sql`(${authTable.decision} in ('block', 'hold_denied'))`;
 const HOLD_DECISIONS = sql`(${authTable.decision} in ('hold_approved', 'hold_denied'))`;
 /** `'allow'` and `'hold_approved'` are the two outcomes that actually carry
@@ -106,8 +114,8 @@ async function agentAggregates(
   const rows = await db
     .select({
       agentSlug: authTable.agentSlug,
-      totalSpend: sql<string>`coalesce(sum(${authTable.amountMicroUsdc}) filter (where ${authTable.decision} = 'allow'), 0)`,
-      wasted: sql<string>`coalesce(sum(${authTable.amountMicroUsdc}) filter (where ${authTable.decision} = 'allow' and ${authTable.quality} is distinct from 'ok'), 0)`,
+      totalSpend: sql<string>`coalesce(sum(${authTable.amountMicroUsdc}) filter (where ${SPEND_DECISIONS}), 0)`,
+      wasted: sql<string>`coalesce(sum(${authTable.amountMicroUsdc}) filter (where ${SPEND_DECISIONS} and ${authTable.quality} is distinct from 'ok'), 0)`,
       allowedCount: sql<number>`(count(*) filter (where ${authTable.decision} = 'allow'))::int`,
       blockedCount: sql<number>`(count(*) filter (where ${BLOCKED_DECISIONS}))::int`,
       holdCount: sql<number>`(count(*) filter (where ${HOLD_DECISIONS}))::int`,
@@ -153,7 +161,7 @@ function counterpartyAggregateColumns() {
   return {
     counterparty: authTable.counterparty,
     callCount: sql<number>`count(*)::int`,
-    totalSpend: sql<string>`coalesce(sum(${authTable.amountMicroUsdc}) filter (where ${authTable.decision} = 'allow'), 0)`,
+    totalSpend: sql<string>`coalesce(sum(${authTable.amountMicroUsdc}) filter (where ${SPEND_DECISIONS}), 0)`,
     allowedCount: sql<number>`(count(*) filter (where ${authTable.decision} = 'allow'))::int`,
     blockedCount: sql<number>`(count(*) filter (where ${BLOCKED_DECISIONS}))::int`,
     holdCount: sql<number>`(count(*) filter (where ${HOLD_DECISIONS}))::int`,
@@ -186,13 +194,13 @@ function toCounterpartySummary(r: {
   });
 }
 
-/** Per-counterparty `allow`-decision spend within `[start, end)`, in the
- *  same currency units the ledger uses. Feeds reconciliation's "what does
- *  the ledger say we spent this period" side. */
+/** Per-counterparty spend (`allow` + `hold_approved`) for one agent on one
+ *  Arc chain — the ledger side of reconciliation. All-time: Gateway's
+ *  transfer history for the wallet is all-time too (bounded below by when
+ *  the agent was registered, see `lib/reconcile`). */
 async function ledgerSpendByCounterparty(
-  userId: string,
-  start: Date,
-  end: Date,
+  agentId: string,
+  chainId: number,
 ): Promise<Map<string, number>> {
   const rows = await db
     .select({
@@ -200,14 +208,7 @@ async function ledgerSpendByCounterparty(
       total: sql<string>`sum(${authTable.amountMicroUsdc})`,
     })
     .from(authTable)
-    .where(
-      and(
-        eq(authTable.userId, userId),
-        eq(authTable.decision, "allow"),
-        gte(authTable.ts, start),
-        lt(authTable.ts, end),
-      ),
-    )
+    .where(and(eq(authTable.agentId, agentId), eq(authTable.chainId, chainId), SPEND_DECISIONS))
     .groupBy(authTable.counterparty);
 
   return new Map(rows.map((r) => [r.counterparty, Number(r.total)]));
@@ -324,37 +325,24 @@ export async function getOverviewStats(
 ): Promise<OverviewStats> {
   const where = scopeByAgent(userId, agentSlug);
 
-  const [[agg], period, reconciliation, agentCounterparties] = await Promise.all([
+  const [[agg], period, relevant] = await Promise.all([
     db
       .select({
-        totalSpend: sql<string>`coalesce(sum(${authTable.amountMicroUsdc}) filter (where ${authTable.decision} = 'allow'), 0)`,
-        wasted: sql<string>`coalesce(sum(${authTable.amountMicroUsdc}) filter (where ${authTable.decision} = 'allow' and ${authTable.quality} is distinct from 'ok'), 0)`,
+        totalSpend: sql<string>`coalesce(sum(${authTable.amountMicroUsdc}) filter (where ${SPEND_DECISIONS}), 0)`,
+        wasted: sql<string>`coalesce(sum(${authTable.amountMicroUsdc}) filter (where ${SPEND_DECISIONS} and ${authTable.quality} is distinct from 'ok'), 0)`,
         blockedCount: sql<number>`(count(*) filter (where ${BLOCKED_DECISIONS}))::int`,
         blockedMicro: sql<string>`coalesce(sum(${authTable.amountMicroUsdc}) filter (where ${BLOCKED_DECISIONS}), 0)`,
       })
       .from(authTable)
       .where(where),
     getLedgerPeriod(userId),
-    listReconciliation(userId),
-    // Reconciliation rows aren't per-agent, so scoping the overview to one
-    // agent means filtering them down to that agent's own counterparties —
-    // a cheap DISTINCT, not a row scan.
-    agentSlug === ALL_AGENTS
-      ? null
-      : db.selectDistinct({ counterparty: authTable.counterparty }).from(authTable).where(where),
+    listReconciliation(userId, agentSlug),
   ]);
 
   const totalAllowedMicroUsdc = Number(agg.totalSpend);
   const wastedMicroUsdc = Number(agg.wasted);
   const ratio = totalAllowedMicroUsdc > 0 ? wastedMicroUsdc / totalAllowedMicroUsdc : 0;
   const blockedMicroUsdc = Number(agg.blockedMicro);
-
-  const relevant = agentCounterparties
-    ? (() => {
-        const set = new Set(agentCounterparties.map((c) => c.counterparty));
-        return reconciliation.filter((r) => set.has(r.counterparty));
-      })()
-    : reconciliation;
 
   const worst: ReconciliationStatus = relevant.some((r) => r.status === "critical")
     ? "critical"
@@ -423,7 +411,7 @@ export async function listAuthorizations(
   if (agentId && agentId !== ALL_AGENTS) {
     conds.push(eq(authTable.agentSlug, agentId));
   }
-  if (counterparty) conds.push(eq(authTable.counterparty, counterparty));
+  if (counterparty) conds.push(eq(authTable.counterparty, normalizeCounterparty(counterparty)));
   if (decision) conds.push(eq(authTable.decision, decision));
   if (quality && quality !== "any") conds.push(eq(authTable.quality, quality));
   if (flagged) conds.push(sql`${authTable.ruleHit} is not null`);
@@ -480,43 +468,38 @@ export async function getCounterparty(
   const [row] = await db
     .select(counterpartyAggregateColumns())
     .from(authTable)
-    .where(and(eq(authTable.userId, userId), eq(authTable.counterparty, counterparty)))
+    .where(
+      and(eq(authTable.userId, userId), eq(authTable.counterparty, normalizeCounterparty(counterparty))),
+    )
     .groupBy(authTable.counterparty);
   if (!row) return null;
   return toCounterpartySummary(row);
 }
 
-/** Which agents actually paid one of the given counterparties — reconciliation
- *  rows are per-counterparty, not per-agent, so "halt the agents behind this
- *  critical mismatch" needs this lookup to know which agents to pause. */
-export async function listAgentSlugsForCounterparties(
-  userId: string,
-  counterparties: string[],
-): Promise<string[]> {
-  if (counterparties.length === 0) return [];
-  const rows = await db
-    .selectDistinct({ agentSlug: authTable.agentSlug })
-    .from(authTable)
-    .where(
-      and(eq(authTable.userId, userId), inArray(authTable.counterparty, counterparties)),
-    );
-  return rows.map((r) => r.agentSlug);
-}
-
 // ── reconciliation ──────────────────────────────────────────────────────────
 
+const SEVERITY: Record<string, number> = { critical: 0, pending: 1, ok: 2 };
+
+/** Reconciliation rows for a tenant, optionally one agent, worst first. */
 export async function listReconciliation(
   userId: string,
+  agentSlug: string = ALL_AGENTS,
 ): Promise<ReconciliationRecord[]> {
   const rows = await db
-    .select()
+    .select({ r: reconTable, slug: agentTable.slug })
     .from(reconTable)
-    .where(eq(reconTable.userId, userId));
+    .innerJoin(agentTable, eq(agentTable.id, reconTable.agentId))
+    .where(
+      agentSlug && agentSlug !== ALL_AGENTS
+        ? and(eq(reconTable.userId, userId), eq(agentTable.slug, agentSlug))
+        : eq(reconTable.userId, userId),
+    );
 
-  const severity: Record<string, number> = { critical: 0, pending: 1, ok: 2 };
   return rows
-    .map((r) =>
+    .map(({ r, slug }) =>
       ReconciliationRecordSchema.parse({
+        agentId: slug,
+        chainId: r.chainId,
         counterparty: r.counterparty,
         periodStart: r.periodStart.toISOString(),
         periodEnd: r.periodEnd.toISOString(),
@@ -528,67 +511,48 @@ export async function listReconciliation(
         settlementId: r.settlementId,
       }),
     )
-    .sort((a, b) => severity[a.status] - severity[b.status]);
+    .sort((a, b) => SEVERITY[a.status] - SEVERITY[b.status]);
 }
 
 /**
- * Rebuilds each counterparty's ledger side from `allow` decisions in the
- * current period and re-classifies against the recorded on-chain amount. A
- * counterparty seen for the first time gets a row where chain == ledger
- * (status ok) — with no Arc indexer wired up yet, "no divergence signal" is
- * the honest default. An existing row's `chainAmountMicroUsdc` is preserved,
- * so seeded/real divergences survive a recompute.
+ * Re-derives the ledger side of every existing reconciliation row from the
+ * current ledger and re-classifies it against the chain amount on record.
+ * Only rows that already have real chain data are touched — an (agent,
+ * chain, counterparty) nobody has imported settlements for yet has no chain
+ * side, and inventing one ("chain == ledger") would be a fabricated number
+ * in a column labelled as on-chain truth. Chain data comes from the
+ * scheduled Gateway reconcile (`lib/reconcile`) or `importSettlements`.
  */
 export async function recomputeReconciliation(userId: string): Promise<number> {
-  const period = await getLedgerPeriod(userId);
-  const start = new Date(period.start);
-  const end = new Date(period.end);
-
-  const [ledgerByCp, existing] = await Promise.all([
-    ledgerSpendByCounterparty(userId, start, end),
-    db.select().from(reconTable).where(eq(reconTable.userId, userId)),
-  ]);
-
-  const chainByCp = new Map(existing.map((r) => [r.counterparty, r]));
-  for (const cp of chainByCp.keys()) {
-    if (!ledgerByCp.has(cp)) ledgerByCp.set(cp, 0);
-  }
-
-  let n = 0;
-  for (const [cp, ledgerAmount] of ledgerByCp) {
-    const prior = chainByCp.get(cp);
-    const chainAmount = prior ? prior.chainAmountMicroUsdc : ledgerAmount;
+  const existing = await db.select().from(reconTable).where(eq(reconTable.userId, userId));
+  const ledgerCache = new Map<string, Map<string, number>>();
+  for (const row of existing) {
+    const key = `${row.agentId}:${row.chainId}`;
+    let ledger = ledgerCache.get(key);
+    if (!ledger) {
+      ledger = await ledgerSpendByCounterparty(row.agentId, row.chainId);
+      ledgerCache.set(key, ledger);
+    }
+    const ledgerAmount = ledger.get(row.counterparty) ?? 0;
     const { deltaMicroUsdc, status } = classifyReconciliation(
-      chainAmount,
+      row.chainAmountMicroUsdc,
       ledgerAmount,
       TOLERANCE_MICRO_USDC,
     );
     await db
-      .insert(reconTable)
-      .values({
-        userId,
-        counterparty: cp,
-        periodStart: start,
-        periodEnd: end,
-        chainAmountMicroUsdc: chainAmount,
+      .update(reconTable)
+      .set({
         ledgerAmountMicroUsdc: ledgerAmount,
         deltaMicroUsdc,
-        toleranceMicroUsdc: TOLERANCE_MICRO_USDC,
         status,
-        settlementId: status === "ok" ? (prior?.settlementId ?? null) : null,
+        periodEnd: new Date(),
+        updatedAt: new Date(),
+        // A divergence that has closed can alert again if it reopens.
+        ...(status !== "critical" ? { alertedAt: null } : {}),
       })
-      .onConflictDoUpdate({
-        target: [reconTable.userId, reconTable.counterparty],
-        set: {
-          periodEnd: start < end ? end : start,
-          ledgerAmountMicroUsdc: ledgerAmount,
-          deltaMicroUsdc,
-          status,
-        },
-      });
-    n++;
+      .where(eq(reconTable.id, row.id));
   }
-  return n;
+  return existing.length;
 }
 
 export interface SettlementEntry {
@@ -597,57 +561,121 @@ export interface SettlementEntry {
   settlementId?: string | null;
 }
 
+export interface ReconciledRow {
+  id: string;
+  agentId: string;
+  chainId: number;
+  counterparty: string;
+  chainAmountMicroUsdc: number;
+  ledgerAmountMicroUsdc: number;
+  deltaMicroUsdc: number;
+  status: ReconciliationStatus;
+  /** Critical now, and no alert has gone out for this divergence yet. */
+  needsAlert: boolean;
+}
+
 /**
- * Feeds real (or exported) on-chain settlement totals into the reconciliation
- * table for the current period, then re-classifies against the local ledger.
- * This is the seam for a Circle Gateway indexer — until one is wired up you
- * can POST settlement rows here (CSV export, a cron job, a webhook).
+ * Feeds on-chain settlement totals for ONE agent on ONE Arc chain into
+ * reconciliation and re-classifies against that agent's ledger on that
+ * chain. With `snapshot: true` the entries are the complete chain picture
+ * (the scheduled Gateway job): every ledger counterparty missing from them
+ * gets chain = 0 (→ pending). Otherwise (a manual/CSV import) only the given
+ * counterparties are touched. Counterparties are canonicalized first.
  */
 export async function importSettlements(
-  userId: string,
+  scope: { userId: string; agentId: string },
+  chainId: number,
   entries: SettlementEntry[],
-): Promise<number> {
-  if (entries.length === 0) return 0;
-  const period = await getLedgerPeriod(userId);
-  const start = new Date(period.start);
-  const end = new Date(period.end);
-  const ledgerByCp = await ledgerSpendByCounterparty(userId, start, end);
-
-  let n = 0;
+  opts: { snapshot?: boolean; periodStart?: Date } = {},
+): Promise<ReconciledRow[]> {
+  const ledger = await ledgerSpendByCounterparty(scope.agentId, chainId);
+  const chain = new Map<string, { micro: number; settlementId: string | null }>();
   for (const e of entries) {
-    const ledgerAmount = ledgerByCp.get(e.counterparty) ?? 0;
-    const chainAmount = Math.round(e.chainAmountMicroUsdc);
+    const cp = normalizeCounterparty(e.counterparty);
+    const cur = chain.get(cp) ?? { micro: 0, settlementId: null };
+    cur.micro += Math.round(e.chainAmountMicroUsdc);
+    cur.settlementId = e.settlementId ?? cur.settlementId;
+    chain.set(cp, cur);
+  }
+  if (opts.snapshot) {
+    for (const cp of ledger.keys()) {
+      if (!chain.has(cp)) chain.set(cp, { micro: 0, settlementId: null });
+    }
+  }
+
+  const prior = new Map(
+    (
+      await db
+        .select()
+        .from(reconTable)
+        .where(and(eq(reconTable.agentId, scope.agentId), eq(reconTable.chainId, chainId)))
+    ).map((r) => [r.counterparty, r]),
+  );
+
+  const now = new Date();
+  const out: ReconciledRow[] = [];
+  for (const [counterparty, c] of chain) {
+    const ledgerAmount = ledger.get(counterparty) ?? 0;
     const { deltaMicroUsdc, status } = classifyReconciliation(
-      chainAmount,
+      c.micro,
       ledgerAmount,
       TOLERANCE_MICRO_USDC,
     );
-    await db
+    const before = prior.get(counterparty);
+    const alertedAt = status === "critical" ? (before?.alertedAt ?? null) : null;
+    const values = {
+      userId: scope.userId,
+      agentId: scope.agentId,
+      chainId,
+      counterparty,
+      periodStart: before?.periodStart ?? opts.periodStart ?? now,
+      periodEnd: now,
+      chainAmountMicroUsdc: c.micro,
+      ledgerAmountMicroUsdc: ledgerAmount,
+      deltaMicroUsdc,
+      toleranceMicroUsdc: TOLERANCE_MICRO_USDC,
+      status,
+      settlementId: c.settlementId,
+      alertedAt,
+      updatedAt: now,
+    };
+    const [row] = await db
       .insert(reconTable)
-      .values({
-        userId,
-        counterparty: e.counterparty,
-        periodStart: start,
-        periodEnd: end,
-        chainAmountMicroUsdc: chainAmount,
-        ledgerAmountMicroUsdc: ledgerAmount,
-        deltaMicroUsdc,
-        toleranceMicroUsdc: TOLERANCE_MICRO_USDC,
-        status,
-        settlementId: e.settlementId ?? null,
-      })
+      .values(values)
       .onConflictDoUpdate({
-        target: [reconTable.userId, reconTable.counterparty],
+        target: [reconTable.agentId, reconTable.chainId, reconTable.counterparty],
         set: {
-          periodEnd: end,
-          chainAmountMicroUsdc: chainAmount,
-          ledgerAmountMicroUsdc: ledgerAmount,
-          deltaMicroUsdc,
-          status,
-          settlementId: e.settlementId ?? null,
+          periodEnd: values.periodEnd,
+          chainAmountMicroUsdc: values.chainAmountMicroUsdc,
+          ledgerAmountMicroUsdc: values.ledgerAmountMicroUsdc,
+          deltaMicroUsdc: values.deltaMicroUsdc,
+          status: values.status,
+          settlementId: values.settlementId,
+          alertedAt: values.alertedAt,
+          updatedAt: now,
         },
-      });
-    n++;
+      })
+      .returning({ id: reconTable.id });
+    out.push({
+      id: row.id,
+      agentId: scope.agentId,
+      chainId,
+      counterparty,
+      chainAmountMicroUsdc: c.micro,
+      ledgerAmountMicroUsdc: ledgerAmount,
+      deltaMicroUsdc,
+      status,
+      needsAlert: status === "critical" && !alertedAt,
+    });
   }
-  return n;
+  return out;
+}
+
+/** Marks critical rows as alerted so the same divergence isn't re-sent. */
+export async function markReconciliationAlerted(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  await db
+    .update(reconTable)
+    .set({ alertedAt: new Date() })
+    .where(inArray(reconTable.id, ids));
 }

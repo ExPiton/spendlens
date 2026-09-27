@@ -27,7 +27,7 @@ export async function POST(request: NextRequest) {
 
   // 20 agent creations/min per user — a real signup flow never needs more
   // than a handful; this just caps a runaway script or leaked session.
-  const limited = enforceRateLimit(`create-agent:${auth.userId}`, 20);
+  const limited = await enforceRateLimit(`create-agent:${auth.userId}`, 20);
   if ("response" in limited) return limited.response;
 
   try {

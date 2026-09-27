@@ -10,8 +10,10 @@ import type { AuthorizationRecord } from "@/lib/contracts";
  * `unref()`'d so it never keeps the process alive on its own.
  *
  * `beforeExit` (unlike the synchronous `exit` event) still lets async code
- * run, and can fire more than once — draining an already-empty queue is a
- * no-op, so it's safe to leave registered for the life of the process. It
+ * run — and fires AGAIN after that async work finishes. So each auto-drain
+ * only runs when records arrived since the previous one: with an unreachable
+ * sink, draining unconditionally re-queued the same batch, kept the event
+ * loop busy, re-triggered `beforeExit`, and the process never exited. It
  * does NOT cover Ctrl+C or an explicit `process.exit()`: Node gives no way
  * to await async work on either of those paths, so code that must guarantee
  * delivery there should still call `drainAndStop()` explicitly.
@@ -19,7 +21,7 @@ import type { AuthorizationRecord } from "@/lib/contracts";
 export function registerAutoDrain(queue: AsyncLedgerQueue): void {
   if (typeof process === "undefined" || typeof process.on !== "function") return;
   process.on("beforeExit", () => {
-    void queue.drainAndStop();
+    if (queue.takeAutoDrainTicket()) void queue.drainAndStop();
   });
 }
 
@@ -36,6 +38,10 @@ export interface AsyncQueueOptions {
   /** Extra headers sent with each POST when the sink is a URL — e.g. an
    *  `Authorization: Bearer …` for a hosted Spendlens ingest endpoint. */
   headers?: Record<string, string>;
+  /** Sees every ingest HTTP response (URL sinks only). The guards use it to
+   *  pick up `x-spendlens-agent-status: paused` — the dashboard kill switch —
+   *  without waiting for the next config poll. */
+  onResponse?: (res: Response) => void;
 }
 
 /**
@@ -52,6 +58,9 @@ export class AsyncLedgerQueue {
   private isFlushing = false;
   private onError?: (err: Error, lostCount: number) => void;
   private headers: Record<string, string>;
+  private onResponse?: (res: Response) => void;
+  /** Records were enqueued since the last automatic (beforeExit) drain. */
+  private dirtySinceAutoDrain = false;
 
   constructor(sink: LedgerSink, options: AsyncQueueOptions = {}) {
     this.sink = sink;
@@ -60,6 +69,7 @@ export class AsyncLedgerQueue {
     this.batchSize = options.batchSize ?? 100;
     this.onError = options.onError;
     this.headers = options.headers ?? {};
+    this.onResponse = options.onResponse;
 
     this.startTimer();
   }
@@ -73,6 +83,10 @@ export class AsyncLedgerQueue {
       }
     }
     this.buffer.push(record);
+    this.dirtySinceAutoDrain = true;
+    // A queue drained earlier (explicit `drain()`) keeps delivering records
+    // that arrive afterwards.
+    this.startTimer();
 
     if (this.buffer.length >= this.batchSize) {
       void this.flush();
@@ -114,6 +128,11 @@ export class AsyncLedgerQueue {
       headers: { "Content-Type": "application/json", ...this.headers },
       body: JSON.stringify({ records }),
     });
+    try {
+      this.onResponse?.(res);
+    } catch {
+      // an observer must never break delivery
+    }
     if (!res.ok) {
       throw new Error(`Failed to post telemetry to sink: ${res.status} ${res.statusText}`);
     }
@@ -128,6 +147,13 @@ export class AsyncLedgerQueue {
         this.timer.unref();
       }
     }
+  }
+
+  /** True (once) when there's something new for an automatic drain. */
+  public takeAutoDrainTicket(): boolean {
+    const dirty = this.dirtySinceAutoDrain && this.buffer.length > 0;
+    this.dirtySinceAutoDrain = false;
+    return dirty;
   }
 
   /** Flushes whatever is buffered and stops the periodic timer. Bounded to

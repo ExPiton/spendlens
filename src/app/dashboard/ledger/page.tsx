@@ -6,6 +6,9 @@ import { LedgerSearchBox } from "@/components/dashboard/LedgerSearchBox";
 import { NoAgents } from "@/components/dashboard/EmptyState";
 import type { Decision, Quality } from "@/lib/contracts";
 import Link from "next/link";
+import { listDigests } from "@/lib/digest";
+import { LedgerIntegrity } from "@/components/dashboard/LedgerIntegrity";
+import { ARC } from "@/lib/arc";
 
 interface LedgerPageProps {
   searchParams: Promise<{
@@ -27,7 +30,7 @@ export default async function LedgerPage(props: LedgerPageProps) {
   const page = parseInt(searchParams.page || "1", 10);
   const pageSize = 30;
 
-  const [options, data] = await Promise.all([
+  const [options, data, digests] = await Promise.all([
     listAgentOptions(user.id),
     listAuthorizations(user.id, {
       agentId,
@@ -37,6 +40,7 @@ export default async function LedgerPage(props: LedgerPageProps) {
       page,
       pageSize,
     }),
+    listDigests(user.id, 7).catch(() => []),
   ]);
 
   if (options.length <= 1) {
@@ -184,6 +188,8 @@ export default async function LedgerPage(props: LedgerPageProps) {
           </div>
         )}
       </div>
+
+      <LedgerIntegrity digests={digests} explorerUrl={ARC.explorerUrl} />
     </div>
   );
 }

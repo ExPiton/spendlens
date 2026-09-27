@@ -9,6 +9,8 @@ import { StatusInline, StatusDot } from "@/components/ui/StatusPill";
 import { reconciliationTone, RECONCILIATION_LABELS } from "@/lib/status";
 import { formatUsdcPrecise, formatCounterparty, formatPeriod } from "@/lib/format";
 import { listAgentOptions } from "@/lib/db/repository";
+import { listAgentRecords } from "@/lib/db/agents";
+import Link from "next/link";
 
 export default async function ReconciliationPage() {
   const { user } = await requireVerifiedUser();
@@ -24,10 +26,12 @@ export default async function ReconciliationPage() {
     );
   }
 
-  const [records, { start, end }] = await Promise.all([
+  const [records, { start, end }, agents] = await Promise.all([
     listReconciliation(user.id),
     getLedgerPeriod(user.id),
+    listAgentRecords(user.id),
   ]);
+  const withoutWallet = agents.filter((a) => !a.walletAddress);
 
   const criticalRecords = records.filter((r) => r.status === "critical");
   const pendingRecords = records.filter((r) => r.status === "pending");
@@ -64,9 +68,25 @@ export default async function ReconciliationPage() {
               </div>
             </div>
             <HaltAffectedAgentsButton
-              counterparties={criticalRecords.map((r) => r.counterparty)}
+              agents={criticalRecords.flatMap((r) => (r.agentId ? [r.agentId] : []))}
             />
           </div>
+        </div>
+      )}
+
+      {withoutWallet.length > 0 && (
+        <div className="rounded-xs border border-held/30 bg-held/5 p-4 text-xs text-fg">
+          <span className="font-semibold text-held">Not reconciled yet:</span>{" "}
+          {withoutWallet.map((a, i) => (
+            <span key={a.id}>
+              {i > 0 && ", "}
+              <Link href={`/dashboard/agents/${a.slug}`} className="font-mono underline">
+                {a.slug}
+              </Link>
+            </span>
+          ))}{" "}
+          {withoutWallet.length === 1 ? "has" : "have"} no wallet address. Add the agent&apos;s Arc wallet
+          address and Spendlens checks its Circle Gateway settlements automatically — no private key needed.
         </div>
       )}
 
@@ -112,7 +132,9 @@ export default async function ReconciliationPage() {
           <div>
             <h3 className="text-sm font-semibold">Reconciliation Table</h3>
             <p className="mt-0.5 text-xs text-muted">
-              Every counterparty&apos;s Arc on-chain settlement total against the locally allowed total.
+              Per agent wallet and Arc chain: each counterparty&apos;s Circle Gateway settlement total
+              against the ledger&apos;s paid total (allow + approved holds). Refreshed automatically on a
+              schedule; transfers from the last few minutes wait for the next pass.
             </p>
           </div>
           <RescanButton />
@@ -122,6 +144,8 @@ export default async function ReconciliationPage() {
           <Table>
             <Thead>
               <Tr>
+                <Th>Agent</Th>
+                <Th>Chain</Th>
                 <Th>Counterparty</Th>
                 <Th align="right">Chain Amount (Arc)</Th>
                 <Th align="right">Local Ledger</Th>
@@ -134,7 +158,14 @@ export default async function ReconciliationPage() {
               {records.map((r) => {
                 const tone = reconciliationTone(r.status);
                 return (
-                  <Tr key={r.counterparty} className={r.status === "critical" ? "bg-critical/5" : ""}>
+                  <Tr
+                    key={`${r.agentId}:${r.chainId}:${r.counterparty}`}
+                    className={r.status === "critical" ? "bg-critical/5" : ""}
+                  >
+                    <Td className="font-mono text-xs">{r.agentId ?? "—"}</Td>
+                    <Td className="font-mono text-xs text-muted">
+                      {r.chainId === 5042 ? "mainnet" : r.chainId === 5042002 ? "testnet" : (r.chainId ?? "—")}
+                    </Td>
                     <Td className="font-mono text-xs font-medium">
                       {formatCounterparty(r.counterparty)}
                     </Td>

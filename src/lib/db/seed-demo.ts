@@ -10,6 +10,7 @@ import {
   reconciliation as reconTable,
 } from "./schema";
 import { defaultPolicyYaml, parsePolicyYaml } from "./policy";
+import { defaultEscalationWebhook } from "@/lib/policy-file";
 import {
   AGENT_PROFILES,
   generateAuthorizations,
@@ -85,28 +86,34 @@ export async function seedDemoData(userId: string): Promise<void> {
   }
 
   // 3. Reconciliation (includes the Scenario-C critical divergence).
-  const recon = generateReconciliation().map((r) => ({
-    userId,
-    counterparty: r.counterparty,
-    periodStart: new Date(r.periodStart),
-    periodEnd: new Date(r.periodEnd),
-    chainAmountMicroUsdc: r.chainAmountMicroUsdc,
-    ledgerAmountMicroUsdc: r.ledgerAmountMicroUsdc,
-    deltaMicroUsdc: r.deltaMicroUsdc,
-    toleranceMicroUsdc: r.toleranceMicroUsdc,
-    status: r.status,
-    settlementId: r.settlementId,
-  }));
+  const recon = generateReconciliation()
+    .filter((r) => r.agentId && slugToId.has(r.agentId))
+    .map((r) => ({
+      userId,
+      agentId: slugToId.get(r.agentId!)!,
+      chainId: r.chainId ?? 5042002,
+      counterparty: r.counterparty,
+      periodStart: new Date(r.periodStart),
+      periodEnd: new Date(r.periodEnd),
+      chainAmountMicroUsdc: r.chainAmountMicroUsdc,
+      ledgerAmountMicroUsdc: r.ledgerAmountMicroUsdc,
+      deltaMicroUsdc: r.deltaMicroUsdc,
+      toleranceMicroUsdc: r.toleranceMicroUsdc,
+      status: r.status,
+      settlementId: r.settlementId,
+    }));
   await db
     .insert(reconTable)
     .values(recon)
     .onConflictDoNothing({
-      target: [reconTable.userId, reconTable.counterparty],
+      target: [reconTable.agentId, reconTable.chainId, reconTable.counterparty],
     });
 }
 
-/** Wipes every agent (cascading to keys, policies, ledger) and reconciliation
- *  row for a tenant. The "start fresh" button. */
+/** Wipes every agent (cascading to keys, policies, ledger, reconciliation,
+ *  escalations) for a tenant. The "start fresh" button. The ledger's
+ *  append-only trigger lets these deletes through because they arrive via
+ *  the agent's foreign-key cascade. */
 export async function clearTenantData(userId: string): Promise<void> {
   await db.delete(agentTable).where(eq(agentTable.userId, userId));
   await db.delete(reconTable).where(eq(reconTable.userId, userId));
@@ -129,6 +136,6 @@ async function policyYamlFor(slug: string): Promise<string> {
       "utf-8",
     );
   } catch {
-    return defaultPolicyYaml(slug);
+    return defaultPolicyYaml(slug, defaultEscalationWebhook());
   }
 }

@@ -15,7 +15,7 @@ import { createApiKey, revokeApiKey } from "@/lib/db/api-keys";
 import { upsertPolicy } from "@/lib/db/policy";
 import { sendTestEvent } from "@/lib/db/ingest";
 import { seedDemoData, clearTenantData } from "@/lib/db/seed-demo";
-import { listAgentSlugsForCounterparties } from "@/lib/db/repository";
+import { decideEscalation } from "@/lib/db/escalations";
 
 export interface ActionState {
   ok?: boolean;
@@ -53,18 +53,15 @@ export async function setAgentStatusAction(formData: FormData): Promise<void> {
   revalidatePath("/dashboard", "layout");
 }
 
-/** Reconciliation flags counterparties, not agents — this resolves "which
- *  agents actually paid these counterparties" and pauses every one of them.
- *  Used by the reconciliation screen's critical-mismatch banner, where
- *  "halt the affected agents" needs to fan out to however many agents used
- *  the compromised counterparty. */
-export async function haltAgentsForCounterpartiesAction(
-  counterparties: string[],
-): Promise<{ halted: string[] }> {
+/** Pauses the given agents (by slug) — the reconciliation screen's
+ *  critical-mismatch banner. Reconciliation rows are per agent, so the
+ *  banner knows exactly which agents' wallets showed unrecorded spend.
+ *  Their guards pick the halt up on the next sync / ingest response and
+ *  block every payment before signing. */
+export async function haltAgentsAction(slugs: string[]): Promise<{ halted: string[] }> {
   const { user } = await requireVerifiedUser();
-  const slugs = await listAgentSlugsForCounterparties(user.id, counterparties);
   const halted: string[] = [];
-  for (const slug of slugs) {
+  for (const slug of new Set(slugs)) {
     const agent = await getAgentRecordBySlug(user.id, slug);
     if (!agent || agent.status === "paused") continue;
     await setAgentStatus(user.id, agent.id, "paused");
@@ -161,6 +158,16 @@ export async function savePolicyAction(
       error: err instanceof Error ? err.message : "Policy is not valid.",
     };
   }
+}
+
+// ── escalations (human approval) ────────────────────────────────────────────
+
+export async function decideEscalationAction(formData: FormData): Promise<void> {
+  const { user } = await requireVerifiedUser();
+  const id = String(formData.get("id") ?? "");
+  const approve = formData.get("decision") === "approve";
+  await decideEscalation(user.id, id, approve, user.id);
+  revalidatePath("/dashboard/approvals");
 }
 
 // ── demo data ───────────────────────────────────────────────────────────────

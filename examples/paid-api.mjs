@@ -13,6 +13,7 @@ import { randomUUID } from "node:crypto";
 
 const PORT = Number(process.env.PAID_API_PORT ?? 4021);
 const PAY_TO = "0x1a2b3c4d5e6f7890abcdef1234567890abcdef12";
+const CHAIN_ID = process.env.ARC_NETWORK === "mainnet" ? "5042" : "5042002";
 
 const ROUTES = {
   "/v1/data": { amount: 0.003, body: () => JSON.stringify({ rows: 3, data: [1, 2, 3] }) },
@@ -37,7 +38,7 @@ const server = createServer(async (req, res) => {
       "x-pay-amount": String(route.amount),
       "x-pay-currency": "USDC",
       "x-pay-nonce": randomUUID(),
-      "x-pay-chain-id": "5042002",
+      "x-pay-chain-id": CHAIN_ID,
     });
     res.end(JSON.stringify({ error: "payment required", payTo: PAY_TO, amount: route.amount }));
     return;

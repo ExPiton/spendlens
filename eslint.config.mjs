@@ -12,6 +12,9 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Generated SDK bundles (`npm run build:sdk`) — built output, not source.
+    "sdk-dist/**",
+    "public/downloads/**",
   ]),
 ]);
 

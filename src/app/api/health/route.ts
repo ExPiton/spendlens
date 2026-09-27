@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { sql } from "drizzle-orm";
 import { db } from "@/lib/db";
+import { jobStatus } from "@/lib/jobs";
+import { ARC } from "@/lib/arc";
 
 /**
  * Unauthenticated liveness/readiness probe for load balancers, uptime checks,
@@ -26,9 +28,16 @@ export async function GET() {
     console.error("[spendlens] /api/health DB check failed:", err);
   }
 
+  // Last success time only — never the error text (it can name hosts).
+  const jobs = jobStatus();
   const body = {
     status: dbOk ? "ok" : "degraded",
     db: dbOk ? "up" : "down",
+    arc: { network: ARC.network, chainId: ARC.chainId },
+    jobs: {
+      reconcile: { lastOkAt: jobs.reconcile.lastOkAt, failing: Boolean(jobs.reconcile.lastError) },
+      digest: { lastOkAt: jobs.digest.lastOkAt, failing: Boolean(jobs.digest.lastError) },
+    },
     uptimeSeconds: Math.round(process.uptime()),
     latencyMs: Date.now() - startedAt,
     ts: new Date().toISOString(),

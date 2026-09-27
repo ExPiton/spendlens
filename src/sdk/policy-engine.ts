@@ -7,6 +7,14 @@ import {
 import type { PolicyConfig } from "@/lib/contracts";
 import { updateBurnRateEwma, isColdStart, type EwmaState } from "@/lib/engine/anomaly";
 import type { QualityRules } from "@/lib/engine/classifyQuality";
+import {
+  shannonEntropyBits,
+  updateEntropyBaseline,
+  type EntropyState,
+} from "@/lib/engine/entropy";
+import { bodyValidatorFor } from "@/lib/engine/schema-check";
+import { normalizeCounterparty } from "@/lib/counterparty";
+import { policyHash } from "@/lib/policy-hash";
 
 export interface EvaluationInput {
   agentId: string;
@@ -23,12 +31,26 @@ export interface EvaluationVerdict {
   qualityRules: QualityRules;
   escalation: PolicyConfig["escalation"];
   anomalyZ?: number;
+  /** Canonical counterparty the decision was made about (lowercased). */
+  counterparty: string;
+  /** SHA-256 of the policy this verdict came from — goes on the ledger row. */
+  policyHash: string;
+  /** Dashboard policy version, when the policy came from remote sync. */
+  policyVersion: number | null;
+}
+
+/** `YYYY-MM` of an epoch-ms timestamp, in UTC — the monthly budget bucket. */
+export function utcMonthKey(nowMs: number): string {
+  const d = new Date(nowMs);
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
 }
 
 export interface PolicyStateStore {
   getTaskSpend(agentId: string, taskId: string): number;
   getHourSpend(agentId: string, nowMs: number): number;
   getDaySpend(agentId: string, nowMs: number): number;
+  /** Spend in the current UTC calendar month. */
+  getMonthSpend(agentId: string, nowMs: number): number;
   getMinuteCallCount(agentId: string, nowMs: number): number;
   getNewCounterpartiesCountLastHour(agentId: string, nowMs: number): number;
   /** Records first contact with a counterparty that was neither allowlisted
@@ -43,7 +65,15 @@ export interface PolicyStateStore {
   getFirstActivityTimestamp(agentId: string): number | null;
   getEwmaState(agentId: string): EwmaState | null;
   setEwmaState(agentId: string, state: EwmaState): void;
+  /** Allowed-call counts per counterparty since `sinceMs` (entropy signal). */
+  getCounterpartyCountsSince(agentId: string, sinceMs: number): Map<string, number>;
+  getEntropyState(agentId: string): EntropyState | null;
+  setEntropyState(agentId: string, state: EntropyState): void;
   recordCall(input: EvaluationInput, verdict: EvaluationVerdict): void;
+  /** Books the spend of a `hold` that was then approved — it was paid, so
+   *  it must count toward every budget exactly like an `allow`. Does not
+   *  bump the call counter (`recordCall` already counted the attempt). */
+  recordSpend(input: EvaluationInput): void;
 }
 
 interface SerializedPolicyState {
@@ -54,6 +84,8 @@ interface SerializedPolicyState {
   firstActivity: Record<string, number>;
   totalCalls: Record<string, number>;
   ewmaStates: Record<string, EwmaState>;
+  monthSpends: Record<string, number>;
+  entropyStates: Record<string, EntropyState>;
 }
 
 export class InMemoryPolicyStateStore implements PolicyStateStore {
@@ -72,6 +104,9 @@ export class InMemoryPolicyStateStore implements PolicyStateStore {
   protected firstActivityMap = new Map<string, number>();
   protected totalCallsMap = new Map<string, number>();
   protected ewmaStates = new Map<string, EwmaState>();
+  /** `${agentId}:${YYYY-MM}` -> spend in that UTC month. */
+  protected monthSpends = new Map<string, number>();
+  protected entropyStates = new Map<string, EntropyState>();
 
   /** Snapshot for persistence. Old call timestamps (> 25h) are dropped —
    *  nothing reads past the day-spend window. */
@@ -85,6 +120,8 @@ export class InMemoryPolicyStateStore implements PolicyStateStore {
       firstActivity: Object.fromEntries(this.firstActivityMap),
       totalCalls: Object.fromEntries(this.totalCallsMap),
       ewmaStates: Object.fromEntries(this.ewmaStates),
+      monthSpends: Object.fromEntries(this.monthSpends),
+      entropyStates: Object.fromEntries(this.entropyStates),
     };
   }
 
@@ -103,6 +140,8 @@ export class InMemoryPolicyStateStore implements PolicyStateStore {
     this.firstActivityMap = new Map(Object.entries(s.firstActivity ?? {}));
     this.totalCallsMap = new Map(Object.entries(s.totalCalls ?? {}));
     this.ewmaStates = new Map(Object.entries(s.ewmaStates ?? {}));
+    this.monthSpends = new Map(Object.entries(s.monthSpends ?? {}));
+    this.entropyStates = new Map(Object.entries(s.entropyStates ?? {}));
   }
 
   /** Hook for subclasses that persist — called after every mutation. */
@@ -124,6 +163,29 @@ export class InMemoryPolicyStateStore implements PolicyStateStore {
     return this.callTimestamps
       .filter((c) => c.agentId === agentId && c.ts >= oneDayAgo)
       .reduce((sum, c) => sum + c.amount, 0);
+  }
+
+  getMonthSpend(agentId: string, nowMs: number): number {
+    return this.monthSpends.get(`${agentId}:${utcMonthKey(nowMs)}`) || 0;
+  }
+
+  getCounterpartyCountsSince(agentId: string, sinceMs: number): Map<string, number> {
+    const counts = new Map<string, number>();
+    for (const c of this.callTimestamps) {
+      if (c.agentId === agentId && c.ts >= sinceMs) {
+        counts.set(c.counterparty, (counts.get(c.counterparty) || 0) + 1);
+      }
+    }
+    return counts;
+  }
+
+  getEntropyState(agentId: string): EntropyState | null {
+    return this.entropyStates.get(agentId) || null;
+  }
+
+  setEntropyState(agentId: string, state: EntropyState): void {
+    this.entropyStates.set(agentId, state);
+    this.onMutate();
   }
 
   getMinuteCallCount(agentId: string, nowMs: number): number {
@@ -179,24 +241,47 @@ export class InMemoryPolicyStateStore implements PolicyStateStore {
     }
     this.totalCallsMap.set(agentId, (this.totalCallsMap.get(agentId) || 0) + 1);
 
-    if (verdict.decision === "allow") {
-      const seenKey = `${agentId}:${input.counterparty}`;
-      if (!this.seenCounterparties.has(seenKey)) {
-        this.seenCounterparties.set(seenKey, now);
-      }
-      if (input.taskId) {
-        const key = `${agentId}:${input.taskId}`;
-        this.taskSpends.set(key, (this.taskSpends.get(key) || 0) + input.amount);
-      }
-      this.callTimestamps.push({
-        agentId,
-        ts: now,
-        amount: input.amount,
-        counterparty: input.counterparty,
-      });
-      this.pruneOldCallTimestamps(now);
-    }
+    if (verdict.decision === "allow") this.bookSpend(input, now);
     this.onMutate();
+  }
+
+  recordSpend(input: EvaluationInput): void {
+    this.bookSpend(input, input.now ?? Date.now());
+    this.onMutate();
+  }
+
+  private bookSpend(input: EvaluationInput, now: number): void {
+    const agentId = input.agentId;
+    const seenKey = `${agentId}:${input.counterparty}`;
+    if (!this.seenCounterparties.has(seenKey)) {
+      this.seenCounterparties.set(seenKey, now);
+    }
+    if (input.taskId) {
+      const key = `${agentId}:${input.taskId}`;
+      this.taskSpends.set(key, (this.taskSpends.get(key) || 0) + input.amount);
+    }
+    const monthKey = `${agentId}:${utcMonthKey(now)}`;
+    this.monthSpends.set(monthKey, (this.monthSpends.get(monthKey) || 0) + input.amount);
+    this.callTimestamps.push({
+      agentId,
+      ts: now,
+      amount: input.amount,
+      counterparty: input.counterparty,
+    });
+    this.pruneOldCallTimestamps(now);
+    this.pruneOldMonths(now);
+  }
+
+  /** Keeps only the current and previous UTC month's buckets. */
+  private pruneOldMonths(nowMs: number): void {
+    if (this.monthSpends.size < 64) return;
+    const d = new Date(nowMs);
+    const prev = utcMonthKey(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() - 1, 1));
+    const cur = utcMonthKey(nowMs);
+    for (const key of this.monthSpends.keys()) {
+      const month = key.slice(key.lastIndexOf(":") + 1);
+      if (month !== cur && month !== prev) this.monthSpends.delete(key);
+    }
   }
 
   /** Drops call-timestamp entries older than the day-spend window (with a
@@ -296,109 +381,168 @@ export class FilePolicyStateStore extends InMemoryPolicyStateStore {
   }
 }
 
+/** Upper bound on the entropy window — the store only keeps 25h of calls. */
+const MAX_ENTROPY_WINDOW_MINUTES = 24 * 60;
+
 /**
  * Spendlens Declarative Policy Engine.
  * Enforces evaluation order:
- * 1. Deny list -> 2. Per-call limits -> 3. Budgets -> 4. Counterparties -> 5. Anomaly -> 6. Quality rules.
+ * 0. Halt (kill switch) -> 1. Deny list -> 2. Per-call limits -> 3. Budgets ->
+ * 4. Counterparties -> 5. Anomaly (burn rate, new-counterparty rate,
+ * counterparty entropy). Quality rules are handed back on the verdict and
+ * applied to the response.
+ *
+ * Counterparties are compared case-insensitively everywhere (see
+ * `normalizeCounterparty`) — an EVM address in checksum case and the same
+ * address in lowercase are one counterparty, so a denylist entry can't be
+ * sidestepped by re-casing the `payTo` in a 402 response.
  */
 export class PolicyEngine {
+  private policy!: PolicyConfig;
+  private allow!: Set<string>;
+  private deny!: Set<string>;
+  private hash!: string;
+  private version: number | null = null;
+  private qualityRules!: QualityRules;
+  /** Non-null while the agent is halted (dashboard kill switch) or the
+   *  policy could not be loaded in a fail-closed setup: every evaluation
+   *  blocks with this rule id until `resume()`. */
+  private haltedRule: string | null = null;
+
   constructor(
-    private policy: PolicyConfig,
+    policy: PolicyConfig,
     private store: PolicyStateStore = new InMemoryPolicyStateStore(),
-  ) {}
+    meta: { version?: number | null } = {},
+  ) {
+    this.setPolicy(policy, meta);
+  }
 
   public getPolicy(): PolicyConfig {
     return this.policy;
   }
 
-  public async evaluate(input: EvaluationInput): Promise<EvaluationVerdict> {
+  public getPolicyHash(): string {
+    return this.hash;
+  }
+
+  public getPolicyVersion(): number | null {
+    return this.version;
+  }
+
+  /**
+   * Swaps the active policy in place — how a rule change made in the
+   * dashboard reaches a running agent without a redeploy (see the SDK's
+   * remote config sync). State (budgets, baselines) is kept: tightening a
+   * limit applies to spend already made. Throws on an uncompilable
+   * `quality.json_schema`, leaving the previous policy active.
+   */
+  public setPolicy(policy: PolicyConfig, meta: { version?: number | null } = {}): void {
+    const validateSchema = bodyValidatorFor(policy.quality.jsonSchema);
+    this.policy = policy;
+    this.allow = new Set(policy.counterparties.allow.map(normalizeCounterparty));
+    this.deny = new Set(policy.counterparties.deny.map(normalizeCounterparty));
+    this.hash = policyHash(policy);
+    this.version = meta.version ?? null;
+    this.qualityRules = {
+      failureStatusCodes: policy.quality.failureStatusCodes,
+      emptyBodyIsFailure: policy.quality.emptyBodyIsFailure,
+      maxLatencyMs: policy.quality.maxLatencyMs,
+      ...(validateSchema ? { validateSchema } : {}),
+    };
+  }
+
+  /** Blocks every payment with `ruleHit` (default `agent.halted`). */
+  public halt(ruleHit = "agent.halted"): void {
+    this.haltedRule = ruleHit;
+  }
+
+  public resume(): void {
+    this.haltedRule = null;
+  }
+
+  public isHalted(): boolean {
+    return this.haltedRule !== null;
+  }
+
+  public getHaltRule(): string | null {
+    return this.haltedRule;
+  }
+
+  /**
+   * A `hold` that escalation then approved was paid: book its spend against
+   * the budgets, the seen set and the entropy window. Without this an
+   * approved hold was invisible to every budget — a way to spend past a
+   * daily limit one approved hold at a time.
+   */
+  public recordHoldApproved(input: EvaluationInput): void {
+    this.store.recordSpend({
+      ...input,
+      counterparty: normalizeCounterparty(input.counterparty),
+    });
+  }
+
+  public async evaluate(rawInput: EvaluationInput): Promise<EvaluationVerdict> {
+    const input: EvaluationInput = {
+      ...rawInput,
+      counterparty: normalizeCounterparty(rawInput.counterparty),
+    };
     const now = input.now ?? Date.now();
     const policy = this.policy;
     const store = this.store;
     const amount = input.amount;
     const counterparty = input.counterparty;
     const agentId = input.agentId;
+    const qualityRules = this.qualityRules;
 
-    const qualityRules: QualityRules = {
-      failureStatusCodes: policy.quality.failureStatusCodes,
-      emptyBodyIsFailure: policy.quality.emptyBodyIsFailure,
-      maxLatencyMs: policy.quality.maxLatencyMs,
+    const verdictOf = (
+      decision: EvaluationVerdict["decision"],
+      ruleHit: string | null,
+      anomalyZ?: number,
+    ): EvaluationVerdict => ({
+      decision,
+      ruleHit,
+      qualityRules,
+      escalation: policy.escalation,
+      counterparty,
+      policyHash: this.hash,
+      policyVersion: this.version,
+      ...(anomalyZ !== undefined ? { anomalyZ } : {}),
+    });
+    const finish = (verdict: EvaluationVerdict): EvaluationVerdict => {
+      store.recordCall(input, verdict);
+      return verdict;
     };
 
-    // 1. Check Deny List
-    if (policy.counterparties.deny.includes(counterparty)) {
-      const verdict: EvaluationVerdict = {
-        decision: "block",
-        ruleHit: "counterparties.deny",
-        qualityRules,
-        escalation: policy.escalation,
-      };
-      store.recordCall(input, verdict);
-      return verdict;
+    // 0. Kill switch — nothing else matters while the agent is halted.
+    if (this.haltedRule) return finish(verdictOf("block", this.haltedRule));
+
+    // 1. Deny list
+    if (this.deny.has(counterparty)) {
+      return finish(verdictOf("block", "counterparties.deny"));
     }
 
-    // 2. Per-call Checks
+    // 2. Per-call checks
     if (amount > policy.perCall.maxUsdc) {
-      const verdict: EvaluationVerdict = {
-        decision: "block",
-        ruleHit: "per_call.max_usdc",
-        qualityRules,
-        escalation: policy.escalation,
-      };
-      store.recordCall(input, verdict);
-      return verdict;
+      return finish(verdictOf("block", "per_call.max_usdc"));
+    }
+    if (store.getMinuteCallCount(agentId, now) >= policy.perCall.maxCallsPerMinute) {
+      return finish(verdictOf("block", "per_call.max_calls_per_minute"));
     }
 
-    const callsInLastMinute = store.getMinuteCallCount(agentId, now);
-    if (callsInLastMinute >= policy.perCall.maxCallsPerMinute) {
-      const verdict: EvaluationVerdict = {
-        decision: "block",
-        ruleHit: "per_call.max_calls_per_minute",
-        qualityRules,
-        escalation: policy.escalation,
-      };
-      store.recordCall(input, verdict);
-      return verdict;
-    }
-
-    // 3. Budgets (task, hour, day)
+    // 3. Budgets (task, hour, day, month)
     for (const budget of policy.budgets) {
-      if (budget.scope === "task" && input.taskId) {
-        const spent = store.getTaskSpend(agentId, input.taskId);
-        if (spent + amount > budget.limitUsdc) {
-          const verdict: EvaluationVerdict = {
-            decision: "block",
-            ruleHit: "budgets.task",
-            qualityRules,
-            escalation: policy.escalation,
-          };
-          store.recordCall(input, verdict);
-          return verdict;
-        }
+      let spent: number | null = null;
+      if (budget.scope === "task") {
+        if (input.taskId) spent = store.getTaskSpend(agentId, input.taskId);
       } else if (budget.scope === "hour") {
-        const spent = store.getHourSpend(agentId, now);
-        if (spent + amount > budget.limitUsdc) {
-          const verdict: EvaluationVerdict = {
-            decision: "block",
-            ruleHit: "budgets.hour",
-            qualityRules,
-            escalation: policy.escalation,
-          };
-          store.recordCall(input, verdict);
-          return verdict;
-        }
+        spent = store.getHourSpend(agentId, now);
       } else if (budget.scope === "day") {
-        const spent = store.getDaySpend(agentId, now);
-        if (spent + amount > budget.limitUsdc) {
-          const verdict: EvaluationVerdict = {
-            decision: "block",
-            ruleHit: "budgets.day",
-            qualityRules,
-            escalation: policy.escalation,
-          };
-          store.recordCall(input, verdict);
-          return verdict;
-        }
+        spent = store.getDaySpend(agentId, now);
+      } else if (budget.scope === "month") {
+        spent = store.getMonthSpend(agentId, now);
+      }
+      if (spent !== null && spent + amount > budget.limitUsdc) {
+        return finish(verdictOf("block", `budgets.${budget.scope}`));
       }
     }
 
@@ -411,46 +555,32 @@ export class PolicyEngine {
 
     // 4. Counterparty first-seen gate. Applies in both allowlist and
     // denylist mode — first contact with any address that isn't already
-    // explicitly trusted (`allow`) or previously vetted (a prior "allow"
-    // verdict) must clear `first_seen` before going further. This is the
-    // primary defense against a prompt-injection redirect to an address the
-    // attacker controls: it doesn't matter which counterparty mode is
-    // configured, an address the agent has never talked to is still new.
-    // Once vetted, `isSeen` stays true for that counterparty from then on —
-    // it is not re-gated on every subsequent call.
-    const isAllowlisted = policy.counterparties.allow.includes(counterparty);
+    // explicitly trusted (`allow`) or previously vetted (a prior paid call)
+    // must clear `first_seen` before going further. This is the primary
+    // defense against a prompt-injection redirect to an address the
+    // attacker controls. Once vetted, a counterparty is not re-gated.
+    const isAllowlisted = this.allow.has(counterparty);
     const isSeen = store.isCounterpartySeen(agentId, counterparty);
-
     if (!isAllowlisted && !isSeen) {
       store.recordFirstContact(agentId, counterparty, now);
       if (amount > policy.counterparties.firstSeen.autoAllowBelowUsdc) {
         const action = policy.counterparties.firstSeen.action;
         if (action === "block" || action === "hold") {
-          const verdict: EvaluationVerdict = {
-            decision: action,
-            ruleHit: "counterparties.first_seen.action",
-            qualityRules,
-            escalation: policy.escalation,
-          };
-          store.recordCall(input, verdict);
-          return verdict;
+          return finish(verdictOf(action, "counterparties.first_seen.action"));
         }
-        if (action === "alert") {
-          alertRuleHit = "counterparties.first_seen.action";
-        }
+        if (action === "alert") alertRuleHit = "counterparties.first_seen.action";
       }
     }
 
-    // 5. Anomaly Detection (EWMA Burn Rate & New Counterparty Velocity)
+    // 5. Anomaly detection
     const totalAuthorizations = store.getTotalAuthorizationsCount(agentId);
     const firstActivity = store.getFirstActivityTimestamp(agentId);
     const minutesSinceStart = firstActivity ? (now - firstActivity) / (60 * 1000) : 0;
     const coldStart = isColdStart(totalAuthorizations, minutesSinceStart);
 
-    // Update EWMA
-    const prevEwma = store.getEwmaState(agentId);
+    // 5a. Burn rate (EWMA)
     const ewmaResult = updateBurnRateEwma(
-      prevEwma,
+      store.getEwmaState(agentId),
       amount,
       now,
       policy.anomaly.burnRate.halflifeMinutes,
@@ -460,15 +590,7 @@ export class PolicyEngine {
     if (!coldStart && ewmaResult.z >= policy.anomaly.burnRate.zThreshold) {
       const action = policy.anomaly.burnRate.action;
       if (action === "block" || action === "hold") {
-        const verdict: EvaluationVerdict = {
-          decision: action,
-          ruleHit: "anomaly.burn_rate",
-          anomalyZ: ewmaResult.z,
-          qualityRules,
-          escalation: policy.escalation,
-        };
-        store.recordCall(input, verdict);
-        return verdict;
+        return finish(verdictOf(action, "anomaly.burn_rate", ewmaResult.z));
       }
       if (action === "alert") {
         alertRuleHit ??= "anomaly.burn_rate";
@@ -476,38 +598,50 @@ export class PolicyEngine {
       }
     }
 
-    // New counterparty rate check
+    // 5b. New counterparty rate
     if (!isSeen) {
       const recentNewCount = store.getNewCounterpartiesCountLastHour(agentId, now);
       if (recentNewCount > policy.anomaly.newCounterpartyRate.maxPerHour) {
         const action = policy.anomaly.newCounterpartyRate.action;
         if (action === "block" || action === "hold") {
-          const verdict: EvaluationVerdict = {
-            decision: action,
-            ruleHit: "anomaly.new_counterparty_rate",
-            qualityRules,
-            escalation: policy.escalation,
-          };
-          store.recordCall(input, verdict);
-          return verdict;
+          return finish(verdictOf(action, "anomaly.new_counterparty_rate"));
         }
-        if (action === "alert") {
-          alertRuleHit ??= "anomaly.new_counterparty_rate";
+        if (action === "alert") alertRuleHit ??= "anomaly.new_counterparty_rate";
+      }
+    }
+
+    // 5c. Counterparty entropy (concentration). The window includes this
+    // call, so a flood to one address pulls the entropy down as it happens.
+    const entropyCfg = policy.anomaly.counterpartyEntropy;
+    if (entropyCfg) {
+      const windowMinutes = Math.min(entropyCfg.windowMinutes, MAX_ENTROPY_WINDOW_MINUTES);
+      const counts = store.getCounterpartyCountsSince(agentId, now - windowMinutes * 60_000);
+      counts.set(counterparty, (counts.get(counterparty) || 0) + 1);
+      const windowCalls = [...counts.values()].reduce((s, c) => s + c, 0);
+      if (windowCalls >= entropyCfg.minCalls) {
+        const check = updateEntropyBaseline(
+          store.getEntropyState(agentId),
+          shannonEntropyBits(counts.values()),
+          now,
+          windowMinutes,
+        );
+        store.setEntropyState(agentId, check.state);
+        // The baseline itself needs `minCalls` observations before a drop
+        // against it means anything — same idea as the burn-rate warm-up.
+        const baselineReady = check.state.n > entropyCfg.minCalls;
+        if (!coldStart && baselineReady && check.drop > entropyCfg.maxDrop) {
+          const action = entropyCfg.action;
+          if (action === "block" || action === "hold") {
+            return finish(verdictOf(action, "anomaly.counterparty_entropy"));
+          }
+          if (action === "alert") alertRuleHit ??= "anomaly.counterparty_entropy";
         }
       }
     }
 
-    // Default Allow — carries an alert signal (ruleHit set, decision still
+    // Default allow — carries an alert signal (ruleHit set, decision still
     // "allow") if one of the alert-only rules above fired without anything
     // blocking or holding the call.
-    const verdict: EvaluationVerdict = {
-      decision: "allow",
-      ruleHit: alertRuleHit,
-      anomalyZ: alertAnomalyZ ?? ewmaResult.z,
-      qualityRules,
-      escalation: policy.escalation,
-    };
-    store.recordCall(input, verdict);
-    return verdict;
+    return finish(verdictOf("allow", alertRuleHit, alertAnomalyZ ?? ewmaResult.z));
   }
 }

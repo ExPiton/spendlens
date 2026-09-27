@@ -1,21 +1,23 @@
 import type { AuthorizationRecord } from "@/lib/contracts";
+import { isSpendDecision } from "./reconciliation";
 
 /**
  * The waste query, as two lines of SQL:
- *   wasted = SUM(amount_usdc WHERE quality <> 'ok' AND decision = 'allow')
- *   ratio  = wasted / SUM(amount_usdc WHERE decision = 'allow')
- * Only paid-and-allowed calls can be "wasted" — a blocked call never spent
- * anything, so it can't count toward the ratio either way.
+ *   wasted = SUM(amount_usdc WHERE quality <> 'ok' AND decision IN ('allow','hold_approved'))
+ *   ratio  = wasted / SUM(amount_usdc WHERE decision IN ('allow','hold_approved'))
+ * Only calls that were actually paid can be "wasted" — a blocked or denied
+ * call never spent anything, so it can't count toward the ratio either way.
+ * An approved hold did spend, so it counts exactly like an `allow`.
  */
 export function computeWaste(
   records: Pick<AuthorizationRecord, "decision" | "quality" | "amountMicroUsdc">[],
 ): { wastedMicroUsdc: number; totalAllowedMicroUsdc: number; ratio: number } {
-  const allowed = records.filter((r) => r.decision === "allow");
-  const totalAllowedMicroUsdc = allowed.reduce(
+  const spent = records.filter((r) => isSpendDecision(r.decision));
+  const totalAllowedMicroUsdc = spent.reduce(
     (sum, r) => sum + r.amountMicroUsdc,
     0,
   );
-  const wastedMicroUsdc = allowed
+  const wastedMicroUsdc = spent
     .filter((r) => r.quality !== "ok")
     .reduce((sum, r) => sum + r.amountMicroUsdc, 0);
   const ratio =

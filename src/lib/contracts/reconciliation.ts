@@ -14,7 +14,15 @@ import { z } from "zod";
 export const ReconciliationStatusSchema = z.enum(["ok", "pending", "critical"]);
 export type ReconciliationStatus = z.infer<typeof ReconciliationStatusSchema>;
 
+/**
+ * One row per (agent, Arc network, counterparty): an agent's wallet is what
+ * Circle Gateway reports transfers for, so the chain side is inherently
+ * per-wallet, and testnet/mainnet settlements must never be summed against
+ * each other. `agentId` is the agent slug; `chainId` the Arc chain id.
+ */
 export const ReconciliationRecordSchema = z.object({
+  agentId: z.string().nullable(),
+  chainId: z.number().int().nullable(),
   counterparty: z.string(),
   periodStart: z.string().datetime({ offset: true }),
   periodEnd: z.string().datetime({ offset: true }),

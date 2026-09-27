@@ -135,6 +135,7 @@ export default async function AgentDetailPage(props: AgentDetailPageProps) {
       <AgentWallet
         agentId={record.id}
         walletAddress={record.walletAddress}
+        isMainnet={ARC.network === "mainnet"}
         faucetUrl={ARC.faucetUrl}
         explorerUrl={ARC.explorerUrl}
         arcLabel={`Arc ${ARC.network === "mainnet" ? "Mainnet" : "Testnet"}`}

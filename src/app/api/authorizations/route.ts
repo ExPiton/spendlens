@@ -38,14 +38,20 @@ export async function GET(request: NextRequest) {
 const MAX_BATCH_SIZE = 1000;
 
 /** SDK ingest — API-key authenticated. Body is `{ records: [...] }` or a single
- *  record. The key's agent is authoritative; a paused agent is rejected. */
+ *  record. The key's agent is authoritative.
+ *
+ *  A halted (paused) agent's records are still ACCEPTED: the audit trail must
+ *  stay complete — rejecting them used to make a halted agent's spend
+ *  invisible exactly when someone was investigating it. Every response
+ *  carries `x-spendlens-agent-status`; on `paused` the SDK engages its kill
+ *  switch and blocks all further payments before signing. */
 export async function POST(request: NextRequest) {
   const key = await requireApiKey(request);
   if (isResponse(key)) return key;
 
   // 240 ingest calls/min per key. The SDK batches, so this is generous for
   // real use but caps a leaked key's blast radius.
-  const limited = enforceRateLimit(`ingest:${key.keyId}`, 240);
+  const limited = await enforceRateLimit(`ingest:${key.keyId}`, 240);
   if ("response" in limited) return limited.response;
 
   try {
@@ -53,13 +59,6 @@ export async function POST(request: NextRequest) {
     if (!agent) {
       return NextResponse.json({ error: "Agent not found" }, { status: 404 });
     }
-    if (agent.status === "paused") {
-      return NextResponse.json(
-        { error: "Agent is halted; ingest rejected" },
-        { status: 423 },
-      );
-    }
-
     const body = await request.json();
     const records = Array.isArray(body?.records)
       ? body.records
@@ -67,10 +66,11 @@ export async function POST(request: NextRequest) {
         ? body
         : [body];
 
+    const statusHeader = { "x-spendlens-agent-status": agent.status };
     if (records.length > MAX_BATCH_SIZE) {
       return NextResponse.json(
         { error: `Batch too large: ${records.length} records (max ${MAX_BATCH_SIZE})` },
-        { status: 413 },
+        { status: 413, headers: statusHeader },
       );
     }
 
@@ -79,8 +79,8 @@ export async function POST(request: NextRequest) {
       records,
     );
     return NextResponse.json(
-      { success: true, ...result },
-      { headers: limited.headers },
+      { success: true, agentStatus: agent.status, ...result },
+      { headers: { ...limited.headers, ...statusHeader } },
     );
   } catch (err) {
     // Logged server-side for operators; the client gets a generic message

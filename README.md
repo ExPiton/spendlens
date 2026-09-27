@@ -98,9 +98,10 @@ npm run db:migrate             # apply drizzle/*.sql
 npm run dev                    # http://localhost:3000
 ```
 
-Open `http://localhost:3000/signup` and create an account — you land straight
-on `/dashboard` (e-mail verification is off). Use **Load sample data** to
-populate every screen, or **New agent** to start clean.
+Open `http://localhost:3000/signup` and create an account. Locally (no e-mail
+provider configured) you land straight on `/dashboard`; in any deployment with
+Resend/SMTP configured, the e-mail address must be verified first. Use **Load
+sample data** to populate every screen, or **New agent** to start clean.
 
 > One-command production run instead: `docker compose up -d --build` — see
 > [DEPLOY.md](DEPLOY.md).
@@ -125,9 +126,11 @@ npm run example
 
 ### Step 4: Write a Policy File (`policies/research-crawler-01.yaml`)
 
-> Optional — `guard()` uses a permissive "record everything, block nothing"
-> policy by default, which you tighten from the **Policies** tab. A YAML file
-> looks like:
+> With `SPENDLENS_URL` + `SPENDLENS_API_KEY` set and no local `policy`, a guard
+> follows the agent's policy from the **Policies** tab — edits apply live, no
+> redeploy. Without a server or a policy, `guard()` falls back to a permissive
+> "record everything, block nothing" default **on testnet only** (it refuses to
+> start on mainnet without a policy). A YAML file looks like:
 
 ```yaml
 version: 1
@@ -140,6 +143,8 @@ budgets:
     limit_usdc: 2.00
   - scope: day
     limit_usdc: 20.00
+  - scope: month          # current UTC calendar month
+    limit_usdc: 400.00
 
 per_call:
   max_usdc: 0.05
@@ -164,15 +169,23 @@ anomaly:
   new_counterparty_rate:
     max_per_hour: 5
     action: alert
+  counterparty_entropy:   # sudden concentration onto one counterparty
+    window_minutes: 60
+    min_calls: 50
+    max_drop: 0.6         # entropy fell >60% below its baseline
+    action: alert
 
 quality:
   failure_status_codes: [402, 429, 500, 502, 503, 504]
   empty_body_is_failure: true
+  json_schema:            # body must match, else quality = schema_fail
+    type: object
+    required: [data]
   max_latency_ms: 4000
 
 escalation:
-  webhook: "https://ops.example.io/hooks/spendlens"
-  timeout_seconds: 30
+  webhook: "https://spendlens.example.com/api/escalate"   # a human approves in the dashboard
+  timeout_seconds: 120
   on_timeout: block
   auto_approve_below_usdc: 0.01   # optional — defaults to 5x first_seen's ceiling
 ```
@@ -196,8 +209,8 @@ import { guard, createLocalSigner } from "@spendlens/sdk";
 const pay = guard({
   agentId: "research-crawler-01",
   // apiKey + sink are read from SPENDLENS_API_KEY / SPENDLENS_URL if omitted
-  // policy: yamlString,                                   // optional; permissive default
-  // signer: createLocalSigner(process.env.AGENT_PRIVATE_KEY), // for real settlement
+  policy: "./policy.yaml",   // YAML text, a file path, or omit to follow the dashboard
+  signer: createLocalSigner(process.env.AGENT_PRIVATE_KEY), // required on mainnet
 });
 
 // Use pay.fetch instead of fetch anywhere the agent calls a paid API:
@@ -209,7 +222,18 @@ const data = await res.json();
 `WWW-Authenticate: Nanopayment`, or a JSON body with `payTo` + `amount`);
 everything else passes straight through untouched. Without a `signer` it uses a
 clearly-logged mock signature — policy, telemetry and quality analysis are
-real, but the payment will not settle.
+real, but the payment will not settle. The mock is **testnet-only**: on Arc
+mainnet (`ARC_NETWORK=mainnet`, or a 402 carrying chain `5042`) the guard
+refuses to run without a real signer.
+
+Connected to a Spendlens server, every guard also obeys the dashboard's **kill
+switch**: halting an agent makes its guard block every payment *before
+signing* (`agent.halted`) within one sync interval (15 s) or on the next ingest
+response, whichever comes first. The halted agent's records are still accepted,
+so the audit trail stays complete.
+
+Self-hosted without a server: `sink: createSqliteLedger("./ledger.db").sink`
+keeps an append-only SQLite ledger (Node's built-in `node:sqlite`).
 
 ### Circle Nanopayments (Arc + Circle Gateway)
 
@@ -220,19 +244,32 @@ never leaves `GatewayClient`.
 
 ```typescript
 import { GatewayClient } from "@circle-fin/x402-batching/client";
-import { guardGateway } from "@spendlens/sdk";
+import { guardGateway, ARC, ARC_GATEWAY_CHAIN } from "@spendlens/sdk";
 
-const client = new GatewayClient({ chain: "arcTestnet", privateKey });
+// ARC_GATEWAY_CHAIN / ARC.rpcUrl resolve from ARC_NETWORK — testnet by default.
+const client = new GatewayClient({ chain: ARC_GATEWAY_CHAIN, privateKey, rpcUrl: ARC.rpcUrl });
 const pay = guardGateway(client, { agentId: "research-crawler-01" });
 const { data, transaction } = await pay.fetch("https://api.example.io/premium", { taskId: "t1" });
 ```
 
-`reconcileFromGateway(client)` reads real on-chain settlement from Gateway to
-feed the reconciliation screen. Full walkthrough, contract addresses and the
-EIP-3009 / `GatewayWalletBatched` details: **[ARC.md](ARC.md)**.
+**Reconciliation is keyless and automatic.** Put the agent's wallet address on
+its dashboard page (or `PATCH /api/agents/<slug> {"walletAddress": "0x…"}`);
+the server reads that wallet's transfers straight from Circle Gateway by address
+every 10 minutes, compares them per counterparty with the agent's ledger on the
+same Arc chain, and on on-chain spend the ledger never recorded (a leaked key)
+**halts the agent and e-mails the owner**. No private key is involved anywhere.
+`npm run reconcile:arc` triggers a run on demand. Full walkthrough, contract
+addresses and the EIP-3009 / `GatewayWalletBatched` details:
+**[ARC.md](ARC.md)**.
 
 > Arc chain ids: testnet **5042002**, mainnet **5042**. Set `ARC_NETWORK=mainnet`
-> (and `ARC_MAINNET_RPC_URL`) to switch.
+> to switch. **Mainnet has no public RPC** — `ARC_MAINNET_RPC_URL` (an Alchemy,
+> QuickNode, or Circle-provided endpoint) is required and must be passed as
+> `rpcUrl` to `GatewayClient` as shown above. There is deliberately no fallback
+> URL: with the variable unset, `ARC.rpcUrl` is `undefined` and Circle's SDK
+> fails immediately with its own "pass a private RPC" error. Always import
+> `ARC_GATEWAY_CHAIN`/`ARC.rpcUrl` from the SDK rather than hardcoding
+> `"arcTestnet"`, so the same code works on both networks.
 
 ---
 
@@ -240,12 +277,13 @@ EIP-3009 / `GatewayWalletBatched` details: **[ARC.md](ARC.md)**.
 
 - **Marketing page (`/`)**: A single-page site positioning the product, walking through the three failure scenarios, and including a live preview rendered with the dashboard's real components (not a static image) on sample data, plus a "how it works" walkthrough.
 - **Overview (`/dashboard`)**: Four core KPI cards at the top (Total Spend, Unmatched Spend & %, Blocked Calls, Reconciliation Status) and a headline waste-analysis sentence.
-- **Event Ledger (`/dashboard/ledger`)**: A filterable, searchable, paginated authorization ledger. Clicking any record opens a **Telemetry Drawer** (latency, SHA-256 digest, nonce, settlement ID, triggered rule).
+- **Event Ledger (`/dashboard/ledger`)**: A filterable, searchable, paginated authorization ledger. Clicking any record opens a **Telemetry Drawer** (latency, SHA-256 digest, nonce, settlement ID, triggered rule, and the SHA-256 of the exact policy the decision was evaluated against). A **Ledger integrity** panel shows each sealed day's hash-chained digest, re-verified live, with its Arc anchor transaction.
 - **Agent Fleet (`/dashboard/agents` & `/dashboard/agents/[agentId]`)**: Spend, efficiency, and anomaly status for every agent, with an emergency kill switch.
 - **Counterparties & Reputation (`/dashboard/counterparties`)**: Quality scores, empty-body/error rates, and first-seen timestamps for every API provider paid.
-- **Arc Reconciliation Audit (`/dashboard/reconciliation`)**: Comparison of Arc Gateway's on-chain batched settlement against the local ledger (🔴 CRITICAL / 🟡 PENDING / 🟢 OK).
+- **Arc Reconciliation Audit (`/dashboard/reconciliation`)**: Per agent wallet and Arc chain, Circle Gateway's settlement against the local ledger (🔴 CRITICAL / 🟡 PENDING / 🟢 OK), refreshed automatically.
+- **Payment Approvals (`/dashboard/approvals`)**: Held payments waiting for a human (the agent waits, nothing is signed), with approve/deny and history. The owner is e-mailed when one arrives.
 - **Policy Management (`/dashboard/policies`)**: A live YAML editor with instant Zod schema validation and a rule summary.
-- **Anomaly & Rate Monitoring (`/dashboard/anomalies`)**: EWMA burn rate, z-score thresholds, and cold-start (warmup) status.
+- **Anomaly & Rate Monitoring (`/dashboard/anomalies`)**: The three signals — EWMA burn rate, new-counterparty rate, counterparty entropy (sudden concentration) — and cold-start (warmup) status.
 - **Interactive Simulator (`/dashboard/simulator`)**: A test environment where scenarios A, B, and C can be run with one click and the resulting telemetry observed live.
 
 ---
@@ -255,6 +293,11 @@ EIP-3009 / `GatewayWalletBatched` details: **[ARC.md](ARC.md)**.
 - **Non-Custodial Architecture**: The Spendlens SDK never touches the agent's private key. It only renders a *"sign"* or *"block"* verdict; signing is done locally by the agent's own signer.
 - **Zero Response-Body Storage (Privacy-First)**: Response bodies are never stored anywhere. After quality validation, only the response size and a 256-bit SHA-256 digest are kept; the body is discarded.
 - **Non-Blocking Async Telemetry**: Ledger writes run on an async queue; the observability layer never adds latency to the agent's API response time.
+- **Case-insensitive counterparties**: EVM addresses and hostnames are canonicalized (lowercase) everywhere — a denylisted address can't be sidestepped by re-casing the `payTo`, and ledger rows join cleanly against Gateway's transfers.
+- **Append-only ledger, enforced by Postgres**: a trigger rejects every UPDATE / DELETE / TRUNCATE on the ledger (only the cascade from deleting an agent or account passes). Each UTC day is sealed into a SHA-256 hash chain; with `ANCHOR_PRIVATE_KEY` set, each digest is written on Arc from an operator wallet (gas only — never user funds).
+- **Policy provenance**: every ledger row carries the SHA-256 of the policy that produced it (and the dashboard version when synced).
+- **Mainnet rails**: no permissive default, no mock signer, no guessed RPC URL on Arc mainnet.
+- **Supply chain**: exact-pinned dependencies (`.npmrc save-exact`), `npm audit` in CI, a CycloneDX SBOM built on every CI run and attached to each SDK release.
 
 ---
 
@@ -262,9 +305,9 @@ EIP-3009 / `GatewayWalletBatched` details: **[ARC.md](ARC.md)**.
 
 - **Auth** is [Better Auth](https://better-auth.com): e-mail + password with
   password reset, plus **Google / GitHub sign-in**. E-mail **verification is
-  currently off** — signup logs the user straight in; re-enable via
-  `requireEmailVerification` in `src/lib/auth/index.ts` and the check in
-  `src/lib/auth/dal.ts`.
+  required whenever an e-mail provider is configured** (Resend/SMTP — i.e. any
+  real deployment); local dev without one stays frictionless. Override with
+  `REQUIRE_EMAIL_VERIFICATION=true|false`.
 - **Google / GitHub** activate automatically when their env vars are set (the
   buttons hide otherwise). Create the OAuth apps, set the redirect URI to
   `<APP_URL>/api/auth/callback/<github|google>`, put the id/secret in `.env`:
@@ -280,13 +323,17 @@ EIP-3009 / `GatewayWalletBatched` details: **[ARC.md](ARC.md)**.
   `src/lib/auth/dal.ts`). The SDK ingest route authenticates by API key and
   writes to that key's owner.
 - **API keys** are per-agent bearer tokens (`sl_` + 40 hex). Only a SHA-256
-  hash is stored; the plaintext is shown once. A halted agent rejects ingest
-  with `423`.
+  hash is stored; the plaintext is shown once. A halted agent's ingest is
+  still accepted (the audit trail stays complete) and answered with
+  `x-spendlens-agent-status: paused`, which engages the SDK's kill switch.
 - **The SDK is served by the app**: `npm run build:sdk` builds `src/sdk` into
   `public/downloads/` as an installable tarball (`spendlens-sdk.tgz`) and a
   single inlined file (`spendlens-sdk.mjs`). `npm run build` / `npm run dev`
-  run it automatically. Reconciliation can be fed real settlement totals via
-  `POST /api/reconciliation/settlements` (session or API key).
+  run it automatically; `.github/workflows/publish-sdk.yml` publishes it to
+  npm as `@spendlens/sdk` (with provenance) when an `sdk-v<version>` tag is
+  pushed. Beyond the automatic Gateway reconciliation, settlement totals can
+  be fed manually via `POST /api/reconciliation/settlements` (session or API
+  key).
 - The marketing page's live preview still renders the deterministic sample
   dataset in `src/lib/mock/` — it is not connected to the database.
 
@@ -296,11 +343,15 @@ EIP-3009 / `GatewayWalletBatched` details: **[ARC.md](ARC.md)**.
 
 ```bash
 npm test              # unit tests (engines, SDK, signer, guardGateway, policy, API-key crypto)
+npm run test:db       # Postgres integration: SQL aggregates, append-only trigger,
+                      #   digests + tamper detection, escalations, per-agent reconciliation
 npm run test:e2e      # full pipeline against a running instance: signup -> agent -> key
                       #   -> a simulated-wallet agent makes ~30 signed paid calls
-                      #   -> ledger / quality / reconciliation asserted end-to-end (22 checks)
-npm run new-wallet    # generate a throwaway Arc wallet for testing the real signer
-npm run reconcile:arc # pull on-chain settlement from Circle Gateway into reconciliation
+                      #   -> ledger / quality / reconciliation, kill switch, remote policy,
+                      #      human escalation, canonical counterparties (30 checks)
+npm run new-wallet    # generate a throwaway TESTNET wallet (refuses on mainnet)
+npm run reconcile:arc # run keyless Gateway reconciliation for the agent now
+npm run sbom          # CycloneDX SBOM of production dependencies
 npx tsc --noEmit      # type-check
 npm run build         # production build (also builds the SDK)
 npm run db:migrate    # apply pending migrations (needs DATABASE_URL / .env)
@@ -310,30 +361,48 @@ npm run db:studio     # drizzle-kit studio
 Agents and keys can be managed over REST as well as the UI (session-scoped):
 `GET`/`POST /api/agents`, `GET`/`POST /api/agents/<slug>/keys`.
 
-CI (`.github/workflows/ci.yml`) runs typecheck + lint + unit tests + app build
-on every push, and the e2e pipeline against a Postgres service container.
+CI (`.github/workflows/ci.yml`) runs typecheck + lint + unit tests + app build +
+production `npm audit` + SBOM on every push, and the DB integration tests and
+e2e pipeline against a Postgres service container.
 
 ### API endpoints for agents (API-key auth)
 
 | Endpoint | Purpose | Rate limit |
 | --- | --- | --- |
 | `POST /api/authorizations` | ingest ledger records | 240 / min / key |
+| `GET /api/sdk/config` | kill-switch state + current dashboard policy (polled by the SDK) | 120 / min / key |
 | `POST /api/escalate` | `hold` escalation webhook target (see below) | 240 / min / key |
-| `POST /api/reconciliation/settlements` | feed on-chain settlement totals | 60 / min / tenant |
-| `GET /api/health` | unauthenticated DB-round-trip probe (`200` / `503`) | — |
+| `GET /api/escalate/<id>` | the SDK's poll while a hold waits for a person | 600 / min / key |
+| `POST /api/reconciliation/run` | keyless Gateway reconciliation for the key's agent, now | 6 / min / tenant |
+| `POST /api/reconciliation/settlements` | feed settlement totals manually (one agent) | 60 / min / tenant |
+| `GET /api/health` | unauthenticated probe: DB round-trip + background-job freshness | — |
 
 Over-limit calls get `429` + `Retry-After`; every response carries
-`X-RateLimit-*`. The limiter is per instance — front it with a shared store
-(Redis) if you run more than one `web` container.
+`X-RateLimit-*`. The limiter is per instance by default; set
+`RATE_LIMIT_STORE=postgres` to share counters across several `web` containers.
 
-### Escalation webhook
+Owner-side (session) additions: `PATCH /api/agents/<slug>` (`status`,
+`walletAddress`), `GET /api/escalations`, `POST /api/escalations/<id>`
+(`approve`/`deny`), `GET /api/ledger/digests`. Operators:
+`POST /api/cron/run` with `Bearer $CRON_SECRET` runs the background jobs from an
+external scheduler.
 
-Point a policy's `escalation.webhook` at `<APP_URL>/api/escalate` (bearer =
-the agent's API key). On a `hold` verdict the SDK POSTs the challenge and
-waits `timeout_seconds`; Spendlens auto-approves when the amount is at or below
-`counterparties.first_seen.auto_allow_below_usdc`, else denies, and records the
-outcome (`hold_approved` / `hold_denied`) to the ledger. On timeout the
-policy's `on_timeout` decides.
+### Escalation — a human in the loop
+
+New agents' policies point `escalation.webhook` at `<APP_URL>/api/escalate`
+(bearer = the agent's API key). On a `hold` verdict the SDK POSTs the payment;
+nothing is signed while it waits. Spendlens:
+
+- **approves at once** when the amount is ≤ `escalation.auto_approve_below_usdc`
+  (default 5× `first_seen.auto_allow_below_usdc`),
+- **denies at once** when the agent is halted,
+- otherwise **queues it for a person** (`202 { status: "pending", pollUrl }`),
+  e-mails the owner, and the SDK polls until someone approves or denies it on
+  **Approvals** — or `timeout_seconds` runs out and `on_timeout` applies.
+
+The SDK writes the `hold_approved` / `hold_denied` ledger row for the payment it
+actually made, and an approved hold counts against every budget like an
+`allow`. Any other webhook can answer `{ "approved": true|false }` directly.
 
 ### Surviving restarts
 
@@ -362,12 +431,15 @@ Full step-by-step, OAuth setup, e-mail, and backups: **[DEPLOY.md](DEPLOY.md)**.
 
 Required environment variables: `APP_URL`, `NEXT_PUBLIC_APP_URL`,
 `BETTER_AUTH_SECRET`, `DATABASE_URL` (compose builds this from
-`POSTGRES_*`). Optional: `GITHUB_CLIENT_ID/SECRET`, `GOOGLE_CLIENT_ID/SECRET`,
-`RESEND_API_KEY` or `SMTP_*`.
+`POSTGRES_*`), and — for anything real — `RESEND_API_KEY` or `SMTP_*` (alerts
+and verification). Mainnet: `ARC_NETWORK=mainnet` + `ARC_MAINNET_RPC_URL`.
+Optional: OAuth ids, `ANCHOR_PRIVATE_KEY`, `ALERT_WEBHOOK_URL`,
+`ERROR_WEBHOOK_URL`, `RATE_LIMIT_STORE`, job intervals — all documented in
+`.env.example`. Compose also runs a nightly `pg_dump` into the `db-backups`
+volume.
 
 ---
 
 ## License
 
-Proprietary — all rights reserved. No license is granted to copy, modify, or
-redistribute this code without permission.
+MIT — see [LICENSE](LICENSE).

@@ -39,7 +39,10 @@ cp .env.example .env
 | `BETTER_AUTH_SECRET` | `openssl rand -base64 32` ile üret |
 | `POSTGRES_PASSWORD` | Güçlü bir parola |
 | `EMAIL_FROM` | Gönderen adresi, örn. `Spendlens <no-reply@ornek.com>` |
-| `RESEND_API_KEY` **veya** `SMTP_*` | Parola sıfırlama e-postası için. İkisi de boşsa sıfırlama linki sadece konteyner loguna yazılır. (E-posta **doğrulaması** şu an kapalı; kayıt olan kullanıcı doğrudan girer.) |
+| `RESEND_API_KEY` **veya** `SMTP_*` | E-posta doğrulama, parola sıfırlama ve **uyarılar** (kritik reconciliation, onay bekleyen ödeme) için. Bir sağlayıcı tanımlıysa kayıtta e-posta doğrulaması **zorunlu** olur (`REQUIRE_EMAIL_VERIFICATION=true/false` ile değiştirilebilir). Production'da bunu boş bırakma. |
+| `ARC_NETWORK`, `ARC_MAINNET_RPC_URL` | Mainnet için `ARC_NETWORK=mainnet`; RPC'yi Alchemy / QuickNode / Circle'dan al. Varsayılan bir mainnet RPC adresi **yok** (bilerek). |
+| `ANCHOR_PRIVATE_KEY` *(opsiyonel)* | Günlük ledger digest'lerini Arc'a yazan operatör cüzdanı. İçinde sadece gas için birkaç USDC olsun — kullanıcı fonuna asla dokunmaz. |
+| `ALERT_WEBHOOK_URL`, `ERROR_WEBHOOK_URL` *(opsiyonel)* | Uyarıların ve sunucu hatalarının JSON kopyası (Slack, Sentry/Datadog HTTP intake vb.). |
 
 `DATABASE_URL`'i elle ayarlamana gerek yok — `docker-compose.yml`, `web`
 konteyneri için onu `db` servisinden otomatik kurar.
@@ -136,15 +139,10 @@ DB (`5432`) ve `web` (`3000`) host'a hiç yayınlanmıyor, dışarıdan erişile
 ## 6. İlk hesap
 
 1. `https://spendlens.ornek.com/signup` → kayıt ol
-2. Doğrudan panele düşersin (e-posta doğrulaması şu an kapalı).
+2. Gelen e-postadaki doğrulama linkine tıkla (e-posta sağlayıcısı tanımlı
+   olduğu sürece doğrulama zorunlu), panele düşersin.
 3. "Load sample data" ile örnek veriyi yükleyip tüm ekranları dolu
    görebilirsin, ya da doğrudan **New agent** ile başlayabilirsin.
-
-> E-posta doğrulamasını sonra açmak istersen: `src/lib/auth/index.ts` içinde
-> `requireEmailVerification` ve `emailVerification.sendOnSignUp` değerlerini
-> `true` yap, `src/lib/auth/dal.ts`'deki `requireVerifiedUser`'a
-> `emailVerified` kontrolünü geri ekle. Bir e-posta sağlayıcısı (`RESEND_API_KEY`
-> ya da `SMTP_*`) şart.
 
 ---
 
@@ -201,27 +199,33 @@ Gazsız, toplu (batched) USDC mikroödemeleri için genel `guard()` yerine
 `@circle-fin/x402-batching`'in `GatewayClient`'ını `guardGateway` ile sar:
 
 ```bash
-npm run new-wallet                 # AGENT_ADDRESS/AGENT_PRIVATE_KEY -> .env
+npm run new-wallet                 # TESTNET anahtarı üretir (mainnet'te reddeder)
 # AGENT_ADDRESS'i https://faucet.circle.com'dan testnet USDC ile fonla (Circle girişi gerekir)
 npm install @circle-fin/x402-batching viem
 ```
 
 ```ts
 import { GatewayClient } from "@circle-fin/x402-batching/client";
-import { guardGateway } from "@spendlens/sdk";
+import { guardGateway, ARC, ARC_GATEWAY_CHAIN } from "@spendlens/sdk";
 
-const client = new GatewayClient({ chain: "arcTestnet", privateKey });
+const client = new GatewayClient({ chain: ARC_GATEWAY_CHAIN, privateKey, rpcUrl: ARC.rpcUrl });
 // await client.deposit("1");   // bir kez, on-chain
 const pay = guardGateway(client, { agentId: "research-crawler-01" });
 const { data, transaction } = await pay.fetch("https://gercek-x402-endpoint/premium", { taskId: "t1" });
 ```
 
 Cüzdan anahtarı `GatewayClient` içinde kalır — Spendlens policy'yi
-`onBeforePaymentCreation` hook'una takar. Zincir uzlaşmasını panele beslemek
-için: `npm run reconcile:arc` (agent sayfasında cüzdan adresini de gir).
+`onBeforePaymentCreation` hook'una takar. **Zincir uzlaşması anahtarsız ve
+otomatik:** agent sayfasına cüzdan **adresini** gir; sunucu 10 dakikada bir
+Circle Gateway'den o adresin transferlerini okur, ledger ile karşılaştırır,
+kayıtsız harcama görürse agent'ı durdurur ve sana e-posta atar. Hemen
+çalıştırmak için: `npm run reconcile:arc`.
 
 Arc chain id'leri: **testnet 5042002**, **mainnet 5042**. Mainnet için
-`ARC_NETWORK=mainnet` ve `ARC_MAINNET_RPC_URL` ayarla. Ayrıntı: **ARC.md**.
+`ARC_NETWORK=mainnet` ve `ARC_MAINNET_RPC_URL` ayarla; mainnet kontrol
+listesi: **ARC.md → Mainnet checklist**. Mainnet'te agent anahtarlarını `.env`
+yerine KMS/HSM ya da Circle Wallets'ta tut — Spendlens'in sadece adrese
+ihtiyacı var.
 
 ---
 
@@ -231,8 +235,12 @@ Arc chain id'leri: **testnet 5042002**, **mainnet 5042**. Mainnet için
 |---|---|
 | Güncelle | `git pull && docker compose up -d --build` (migration'lar açılışta çalışır) |
 | Loglar | `docker compose logs -f web` / `... db` |
-| DB yedeği | `docker compose exec db pg_dump -U spendlens spendlens > yedek.sql` |
-| DB geri yükle | `cat yedek.sql \| docker compose exec -T db psql -U spendlens spendlens` |
+| Otomatik yedek | `backup` servisi her gün `pg_dump` alır → `db-backups` volume'ü (`BACKUP_KEEP_DAYS`, varsayılan 14 gün). Listele: `docker compose exec backup ls -lh /backups`. Volume'ü sunucu **dışına** da kopyala. |
+| Elle yedek | `docker compose exec db pg_dump -U spendlens spendlens > yedek.sql` |
+| Geri yükle | `gunzip -c spendlens-….sql.gz \| docker compose exec -T db psql -U spendlens spendlens` (düz dosya için `cat yedek.sql \| …`) |
+| Arka plan işleri | Reconciliation (10 dk) + ledger digest (60 dk) uygulamanın içinde çalışır. Durumu: `curl -s https://…/api/health` → `jobs`. Dış zamanlayıcı istersen: `POST /api/cron/run` + `Authorization: Bearer $CRON_SECRET`. |
+| Hata takibi | Sunucu hataları tek satır JSON olarak loglanır; `ERROR_WEBHOOK_URL` tanımlıysa oraya da gönderilir. |
+| Birden fazla `web` | `RATE_LIMIT_STORE=postgres` ayarla (sayaçlar paylaşılsın). |
 | Migration'ı elle çalıştır | `docker compose exec web node -e "require('./server.js')"` yerine: yeni deploy'da otomatik. Yerelde: `npm run db:migrate` |
 | Durdur | `docker compose down` (veriler `db-data` volume'ünde kalır) |
 | Her şeyi sil | `docker compose down -v` (**veritabanı dahil siler**) |

@@ -9,7 +9,28 @@ describe("default policy template", () => {
     assert.equal(config.agent, "research-crawler-01");
     assert.equal(config.counterparties.mode, "denylist");
     assert.equal(config.perCall.maxUsdc, 0.05);
-    assert.equal(config.budgets.length, 3);
+    assert.deepEqual(config.budgets.map((b) => b.scope), ["task", "hour", "day", "month"]);
+    assert.equal(config.anomaly.counterpartyEntropy?.action, "alert");
+    assert.equal(config.escalation.webhook, null, "no APP_URL → escalation off, not a placeholder host");
+  });
+
+  it("points escalation at this instance when a webhook is given", () => {
+    const { config } = parsePolicyYaml(
+      defaultPolicyYaml("agent-x", "https://spendlens.example.com/api/escalate"),
+    );
+    assert.equal(config.escalation.webhook, "https://spendlens.example.com/api/escalate");
+  });
+
+  it("the shipped sample policy (inline json_schema, month budget, entropy) validates", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { config } = parsePolicyYaml(readFileSync("policies/research-crawler-01.yaml", "utf8"));
+    assert.ok(config.quality.jsonSchema?.includes('"required"'));
+    assert.ok(config.budgets.some((b) => b.scope === "month"));
+  });
+
+  it("rejects a json_schema that isn't valid JSON", () => {
+    const bad = defaultPolicyYaml("agent-x").replace("json_schema: null", 'json_schema: "{oops"');
+    assert.throws(() => parsePolicyYaml(bad), /json_schema/);
   });
 
   it("is permissive: an allowed micro-payment to a fresh counterparty passes", async () => {

@@ -5,6 +5,8 @@ export interface QualityCheckInput {
   status: number;
   bodyBytes: number;
   latencyMs: number;
+  /** The response body text — only read by `validateSchema`, never stored. */
+  body?: string;
 }
 
 export interface QualityRules {
@@ -12,12 +14,11 @@ export interface QualityRules {
   emptyBodyIsFailure: boolean;
   maxLatencyMs: number;
   /**
-   * Validates the response body against `quality.json_schema`. Schema
-   * validation needs the actual compiled schema, which lives outside a
-   * pure function — callers inject the check; omitted entirely (no
+   * Validates the response body against `quality.json_schema` (compiled by
+   * `bodyValidatorFor` in `./schema-check`). Omitted entirely (no
    * `json_schema` configured) means every body passes.
    */
-  validateSchema?: (bodyBytes: number) => boolean;
+  validateSchema?: (body: string) => boolean;
 }
 
 /**
@@ -32,7 +33,7 @@ export function classifyQuality(
   if (res.timedOut) return "timeout";
   if (rules.failureStatusCodes.includes(res.status)) return "http_error";
   if (rules.emptyBodyIsFailure && res.bodyBytes === 0) return "empty";
-  if (rules.validateSchema && !rules.validateSchema(res.bodyBytes)) {
+  if (rules.validateSchema && res.body !== undefined && !rules.validateSchema(res.body)) {
     return "schema_fail";
   }
   if (res.latencyMs > rules.maxLatencyMs) return "slow";
