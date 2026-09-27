@@ -5,10 +5,11 @@ import * as schema from "./schema";
 
 /**
  * One pooled postgres.js client per server process, created lazily on first
- * use. `DATABASE_URL` is required at runtime but NOT at build time — Next.js
- * imports every route module while collecting page data, so throwing here
- * would break `next build` in environments without the database wired up yet
- * (e.g. the Docker builder stage).
+ * use (postgres.js doesn't connect until the first query). Note that `next
+ * build` still needs *a* `DATABASE_URL` value: Better Auth's Drizzle adapter
+ * reads the client while route modules are imported for page-data
+ * collection. Any placeholder works — the Dockerfile builder stage and CI set
+ * one — because nothing is ever queried during the build.
  */
 
 type Db = PostgresJsDatabase<typeof schema>;

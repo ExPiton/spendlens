@@ -33,9 +33,14 @@ jobs:
       - name: Build app (runs build:sdk via prebuild)
         run: npm run build
         env:
-          # `next build` imports route modules; a throwaway value is enough for
-          # collection, and the DB is never contacted during the build.
+          # `next build` imports route modules; throwaway values are enough for
+          # collection, and the DB is never contacted during the build. The
+          # DATABASE_URL placeholder is required all the same: Better Auth's
+          # Drizzle adapter touches the (lazy) db client at import time, so
+          # without it page-data collection throws — same reason the
+          # Dockerfile's builder stage sets one.
           BETTER_AUTH_SECRET: ci-not-a-real-secret-ci-not-a-real-secret
+          DATABASE_URL: postgres://build:build@127.0.0.1:5432/build
           NEXT_TELEMETRY_DISABLED: "1"
 
       - name: Audit production dependencies
