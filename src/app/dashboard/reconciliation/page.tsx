@@ -12,6 +12,8 @@ import { listAgentOptions } from "@/lib/db/repository";
 import { listAgentRecords } from "@/lib/db/agents";
 import Link from "next/link";
 
+export const metadata = { title: "Reconciliation" };
+
 export default async function ReconciliationPage() {
   const { user } = await requireVerifiedUser();
   const options = await listAgentOptions(user.id);
@@ -33,6 +35,7 @@ export default async function ReconciliationPage() {
   ]);
   const withoutWallet = agents.filter((a) => !a.walletAddress);
 
+  const tolerance = formatUsdcPrecise(records[0]?.toleranceMicroUsdc ?? 50);
   const criticalRecords = records.filter((r) => r.status === "critical");
   const pendingRecords = records.filter((r) => r.status === "pending");
   const okRecords = records.filter((r) => r.status === "ok");
@@ -42,28 +45,34 @@ export default async function ReconciliationPage() {
       {/* Header */}
       <div className="border-b border-border pb-6">
         <div className="flex items-center gap-2 text-xs text-muted">
-          <span>Arc Reconciliation Audit</span>
-          <span>•</span>
+          <span>Reconciliation</span>
+          <span aria-hidden="true">•</span>
           <span className="font-mono text-signal">{formatPeriod(start, end)}</span>
         </div>
-        <h1 className="mt-1 text-2xl font-bold tracking-tight">Arc Gateway On-Chain Reconciliation Audit</h1>
-        <p className="mt-1 text-xs text-muted">
-          Comparison of the settlement records Circle Gateway batches on Arc against the local event ledger.
+        <h1 className="mt-1 text-2xl font-bold tracking-tight">Ledger vs. Circle Gateway on Arc</h1>
+        <p className="mt-1 max-w-3xl text-xs text-muted">
+          What Circle Gateway settled from each agent&rsquo;s wallet, compared with what your ledger says was
+          paid. Checked automatically every 10 minutes; the newest 5 minutes wait for the next pass so an
+          in-flight ledger row isn&rsquo;t mistaken for a leak.
         </p>
       </div>
 
       {/* Critical Alert Banner if any critical mismatches exist */}
       {criticalRecords.length > 0 && (
-        <div className="rounded-md border border-critical bg-critical/10 p-6 text-fg animate-pulse">
+        <div role="alert" className="rounded-md border border-critical bg-critical/10 p-6 text-fg">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex items-start gap-3">
-              <span className="text-xl">⚠️</span>
+              <StatusDot tone="critical" className="mt-1.5 size-2.5" />
               <div>
-                <h3 className="font-bold text-critical text-sm">
-                  CRITICAL SECURITY ALERT: Suspected Unauthorized Signature / Key Leak
-                </h3>
-                <p className="mt-1 text-xs text-fg leading-relaxed">
-                  A phantom settlement not recorded in the local ledger was detected on the Arc chain for {criticalRecords.length} counterpart{criticalRecords.length === 1 ? "y" : "ies"} (delta &gt; tolerance). Even if the agent&apos;s wallet policy wasn&apos;t violated, the signing key may have leaked.
+                <h2 className="text-sm font-bold text-critical">
+                  Unrecorded on-chain spend: possible leaked key
+                </h2>
+                <p className="mt-1 max-w-2xl text-xs leading-relaxed text-fg">
+                  Circle Gateway settled payments to{" "}
+                  {criticalRecords.length === 1 ? "1 counterparty" : `${criticalRecords.length} counterparties`} that no
+                  Spendlens-guarded call recorded. If you
+                  didn&rsquo;t make them another way, treat the wallet key as leaked: halt the agent, rotate the key and
+                  move the funds.
                 </p>
               </div>
             </div>
@@ -76,7 +85,7 @@ export default async function ReconciliationPage() {
 
       {withoutWallet.length > 0 && (
         <div className="rounded-xs border border-held/30 bg-held/5 p-4 text-xs text-fg">
-          <span className="font-semibold text-held">Not reconciled yet:</span>{" "}
+          <span className="font-semibold text-held">Not checked yet:</span>{" "}
           {withoutWallet.map((a, i) => (
             <span key={a.id}>
               {i > 0 && ", "}
@@ -85,8 +94,9 @@ export default async function ReconciliationPage() {
               </Link>
             </span>
           ))}{" "}
-          {withoutWallet.length === 1 ? "has" : "have"} no wallet address. Add the agent&apos;s Arc wallet
-          address and Spendlens checks its Circle Gateway settlements automatically — no private key needed.
+          {withoutWallet.length === 1 ? "has" : "have"} no wallet address. Add it on the agent&rsquo;s page and
+          Spendlens checks that wallet&rsquo;s Circle Gateway settlements automatically. The address is enough, no
+          private key.
         </div>
       )}
 
@@ -95,34 +105,34 @@ export default async function ReconciliationPage() {
         <div className="rounded-xs border border-border bg-surface p-4">
           <div className="flex items-center gap-2">
             <StatusDot tone="critical" />
-            <span className="text-xs font-medium text-muted">Critical Mismatch (Unauthorized Signature)</span>
+            <span className="text-xs font-medium text-muted">Unrecorded spend</span>
           </div>
           <div className="mt-2 font-mono text-2xl font-bold text-critical">
             {criticalRecords.length}
           </div>
-          <p className="mt-1 text-[11px] text-muted">On chain, missing from the local ledger</p>
+          <p className="mt-1 text-[11px] text-muted">Settled on chain, missing from the ledger</p>
         </div>
 
         <div className="rounded-xs border border-border bg-surface p-4">
           <div className="flex items-center gap-2">
             <StatusDot tone="held" />
-            <span className="text-xs font-medium text-muted">Pending Reconciliation</span>
+            <span className="text-xs font-medium text-muted">Not settled yet</span>
           </div>
           <div className="mt-2 font-mono text-2xl font-bold text-held">
             {pendingRecords.length}
           </div>
-          <p className="mt-1 text-[11px] text-muted">Allowed in the ledger, not yet settled on chain</p>
+          <p className="mt-1 text-[11px] text-muted">Paid in the ledger, not yet settled on chain</p>
         </div>
 
         <div className="rounded-xs border border-border bg-surface p-4">
           <div className="flex items-center gap-2">
             <StatusDot tone="signal" />
-            <span className="text-xs font-medium text-muted">Fully Matched</span>
+            <span className="text-xs font-medium text-muted">Matched</span>
           </div>
           <div className="mt-2 font-mono text-2xl font-bold text-signal">
             {okRecords.length}
           </div>
-          <p className="mt-1 text-[11px] text-muted">Within tolerance (|delta| &le; tolerance)</p>
+          <p className="mt-1 text-[11px] text-muted">Chain and ledger agree within {tolerance} USDC</p>
         </div>
       </div>
 
@@ -130,11 +140,9 @@ export default async function ReconciliationPage() {
       <div className="rounded-md border border-border bg-surface p-6">
         <div className="flex items-center justify-between border-b border-border pb-4">
           <div>
-            <h3 className="text-sm font-semibold">Reconciliation Table</h3>
+            <h2 className="text-sm font-semibold">By agent and counterparty</h2>
             <p className="mt-0.5 text-xs text-muted">
-              Per agent wallet and Arc chain: each counterparty&apos;s Circle Gateway settlement total
-              against the ledger&apos;s paid total (allow + approved holds). Refreshed automatically on a
-              schedule; transfers from the last few minutes wait for the next pass.
+              Settled total vs. the ledger&rsquo;s paid total (allowed + approved holds). Rescan checks now.
             </p>
           </div>
           <RescanButton />
@@ -147,14 +155,22 @@ export default async function ReconciliationPage() {
                 <Th>Agent</Th>
                 <Th>Chain</Th>
                 <Th>Counterparty</Th>
-                <Th align="right">Chain Amount (Arc)</Th>
-                <Th align="right">Local Ledger</Th>
-                <Th align="right">Delta</Th>
-                <Th>Reconciliation Status</Th>
-                <Th>Settlement ID / Tx</Th>
+                <Th align="right">Settled (USDC)</Th>
+                <Th align="right">Ledger (USDC)</Th>
+                <Th align="right">Difference</Th>
+                <Th>Status</Th>
+                <Th>Last Gateway transfer</Th>
               </Tr>
             </Thead>
             <Tbody>
+              {records.length === 0 && (
+                <tr>
+                  <td colSpan={8} className="px-3 py-10 text-center text-sm text-muted">
+                    Nothing to compare yet. Add an agent&rsquo;s wallet address and its settlements show up here after
+                    the next check.
+                  </td>
+                </tr>
+              )}
               {records.map((r) => {
                 const tone = reconciliationTone(r.status);
                 return (
@@ -166,19 +182,19 @@ export default async function ReconciliationPage() {
                     <Td className="font-mono text-xs text-muted">
                       {r.chainId === 5042 ? "mainnet" : r.chainId === 5042002 ? "testnet" : (r.chainId ?? "—")}
                     </Td>
-                    <Td className="font-mono text-xs font-medium">
+                    <Td className="font-mono text-xs font-medium" title={r.counterparty}>
                       {formatCounterparty(r.counterparty)}
                     </Td>
                     <Td align="right">
-                      <MonoNumber>{formatUsdcPrecise(r.chainAmountMicroUsdc)} USDC</MonoNumber>
+                      <MonoNumber>{formatUsdcPrecise(r.chainAmountMicroUsdc)}</MonoNumber>
                     </Td>
                     <Td align="right">
-                      <MonoNumber>{formatUsdcPrecise(r.ledgerAmountMicroUsdc)} USDC</MonoNumber>
+                      <MonoNumber>{formatUsdcPrecise(r.ledgerAmountMicroUsdc)}</MonoNumber>
                     </Td>
                     <Td align="right">
                       <MonoNumber className={r.status === "critical" ? "text-critical font-bold" : ""}>
                         {r.deltaMicroUsdc > 0 ? "+" : ""}
-                        {formatUsdcPrecise(r.deltaMicroUsdc)} USDC
+                        {formatUsdcPrecise(r.deltaMicroUsdc)}
                       </MonoNumber>
                     </Td>
                     <Td>
@@ -186,12 +202,8 @@ export default async function ReconciliationPage() {
                         {RECONCILIATION_LABELS[r.status]}
                       </StatusInline>
                     </Td>
-                    <Td className="text-muted text-xs font-mono">
-                      {r.settlementId ? (
-                        <span className="text-signal">{r.settlementId}</span>
-                      ) : (
-                        "—"
-                      )}
+                    <Td className="max-w-40 truncate font-mono text-[11px] text-muted" title={r.settlementId ?? undefined}>
+                      {r.settlementId ?? "—"}
                     </Td>
                   </Tr>
                 );

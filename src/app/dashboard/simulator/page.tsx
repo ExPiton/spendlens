@@ -4,6 +4,8 @@ import { NoAgents } from "@/components/dashboard/EmptyState";
 import { AgentSwitcher } from "@/components/dashboard/AgentSwitcher";
 import { SimulatorSandbox } from "@/components/dashboard/SimulatorSandbox";
 
+export const metadata = { title: "Simulator" };
+
 interface SimulatorPageProps {
   searchParams: Promise<{ agentId?: string }>;
 }
@@ -22,10 +24,10 @@ export default async function SimulatorPage(props: SimulatorPageProps) {
       <div className="space-y-6">
         <div className="border-b border-border pb-6">
           <span className="text-xs font-semibold tracking-wider text-muted uppercase">
-            Live Test Environment — Simulator
+            Simulator
           </span>
           <h1 className="mt-1 text-2xl font-bold tracking-tight">
-            Interactive Scenario &amp; Policy Simulator
+            What would your policy do?
           </h1>
         </div>
         <NoAgents />
@@ -44,14 +46,14 @@ export default async function SimulatorPage(props: SimulatorPageProps) {
       <div className="flex flex-col gap-4 border-b border-border pb-6 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <span className="text-xs font-semibold tracking-wider text-muted uppercase">
-            Live Test Environment — Simulator
+            Simulator
           </span>
           <h1 className="mt-1 text-2xl font-bold tracking-tight">
-            Interactive Scenario &amp; Policy Simulator
+            What would your policy do?
           </h1>
           <p className="mt-1 text-xs text-muted">
-            Test Spendlens&apos;s 402 payment interception, anomaly checks, and quality analysis live — against{" "}
-            <span className="font-mono">{agentId}</span>&apos;s real, saved policy.
+            Runs <span className="font-mono">{agentId}</span>&rsquo;s saved policy through the real policy engine,
+            starting from empty budgets. Nothing is signed, paid or saved.
           </p>
         </div>
         <AgentSwitcher options={options} currentAgentId={agentId} />

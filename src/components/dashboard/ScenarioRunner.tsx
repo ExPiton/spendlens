@@ -12,6 +12,8 @@ interface ScenarioResult {
   scenario: string;
   title: string;
   summary: string;
+  /** Scenario A: how many of the 25 calls the saved policy actually stopped. */
+  outcome?: "stopped" | "partial" | "missed";
   preventedLossUsdc?: number;
   wastedSpendUsdc?: number;
   blockedCount?: number;
@@ -31,10 +33,12 @@ interface ScenarioResult {
 export function ScenarioRunner({ agentId }: { agentId: string }) {
   const [runningScenario, setRunningScenario] = useState<string | null>(null);
   const [result, setResult] = useState<ScenarioResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   async function runScenario(scenario: "A" | "B" | "C") {
     setRunningScenario(scenario);
     setResult(null);
+    setError(null);
 
     try {
       const res = await fetch("/api/simulate", {
@@ -43,12 +47,15 @@ export function ScenarioRunner({ agentId }: { agentId: string }) {
         body: JSON.stringify({ scenario, agentId }),
       });
 
-      if (res.ok) {
-        const data = await res.json();
+      const data = await res.json().catch(() => null);
+      if (res.ok && data) {
         setResult(data);
+      } else {
+        setError(data?.error ?? `The simulation failed (HTTP ${res.status}).`);
       }
     } catch (err) {
       console.error(err);
+      setError("Could not reach the server. Check your connection and try again.");
     } finally {
       setRunningScenario(null);
     }
@@ -61,9 +68,13 @@ export function ScenarioRunner({ agentId }: { agentId: string }) {
           <span className="text-xs font-semibold tracking-wider text-muted uppercase">
             Interactive Failure Scenario Simulator
           </span>
-          <h3 className="mt-1 text-lg font-semibold">
-            Test the 3 critical scenarios existing tools miss — and Spendlens catches
-          </h3>
+          <h2 className="mt-1 text-lg font-semibold">
+            Would this agent&rsquo;s policy stop these three failures?
+          </h2>
+          <p className="mt-1 text-xs text-muted">
+            Runs this agent&rsquo;s saved policy through the real policy engine, starting from empty budgets.
+            Simulations never write to the ledger or change an agent&rsquo;s status.
+          </p>
         </div>
       </div>
 
@@ -73,13 +84,13 @@ export function ScenarioRunner({ agentId }: { agentId: string }) {
           <div>
             <div className="flex items-center justify-between">
               <span className="font-mono text-xs font-bold text-signal">Scenario A</span>
-              <span className="rounded-xs bg-critical/10 px-1.5 py-0.5 text-[10px] font-medium text-critical">
+              <span className="rounded-xs border border-critical/40 bg-critical/10 px-1.5 py-0.5 text-[11px] font-medium text-fg">
                 Prompt Injection
               </span>
             </div>
-            <h4 className="mt-2 text-sm font-semibold">Prompt injection redirect</h4>
+            <h3 className="mt-2 text-sm font-semibold">Prompt injection redirect</h3>
             <p className="mt-1 text-xs text-muted">
-              25 rapid micro-calls to an attacker-controlled address. No single call exceeds the per-call limit, but the budget and unauthorized-address checks catch it.
+              25 rapid micro-calls to an attacker-controlled address. No single call exceeds the per-call limit. The question is whether your counterparty rules catch the redirect.
             </p>
           </div>
           <div className="mt-4 pt-3 border-t border-border/50">
@@ -89,7 +100,7 @@ export function ScenarioRunner({ agentId }: { agentId: string }) {
               disabled={runningScenario !== null}
               onClick={() => runScenario("A")}
             >
-              {runningScenario === "A" ? "Simulating..." : "Run Scenario A"}
+              {runningScenario === "A" ? "Simulating…" : "Run Scenario A"}
             </Button>
           </div>
         </div>
@@ -99,13 +110,13 @@ export function ScenarioRunner({ agentId }: { agentId: string }) {
           <div>
             <div className="flex items-center justify-between">
               <span className="font-mono text-xs font-bold text-signal">Scenario B</span>
-              <span className="rounded-xs bg-held/10 px-1.5 py-0.5 text-[10px] font-medium text-held">
+              <span className="rounded-xs bg-held/10 px-1.5 py-0.5 text-[11px] font-medium text-held">
                 Quality Degradation
               </span>
             </div>
-            <h4 className="mt-2 text-sm font-semibold">Silent quality degradation</h4>
+            <h3 className="mt-2 text-sm font-semibold">Silent quality degradation</h3>
             <p className="mt-1 text-xs text-muted">
-              The provider returns 200 OK with an empty body (0 bytes). A standard payment flow keeps paying uninterrupted — Spendlens logs it as wasted spend.
+              The provider returns 200 OK with an empty body (0 bytes). A standard payment flow keeps paying uninterrupted. Spendlens logs it as wasted spend.
             </p>
           </div>
           <div className="mt-4 pt-3 border-t border-border/50">
@@ -115,7 +126,7 @@ export function ScenarioRunner({ agentId }: { agentId: string }) {
               disabled={runningScenario !== null}
               onClick={() => runScenario("B")}
             >
-              {runningScenario === "B" ? "Simulating..." : "Run Scenario B"}
+              {runningScenario === "B" ? "Simulating…" : "Run Scenario B"}
             </Button>
           </div>
         </div>
@@ -125,13 +136,13 @@ export function ScenarioRunner({ agentId }: { agentId: string }) {
           <div>
             <div className="flex items-center justify-between">
               <span className="font-mono text-xs font-bold text-signal">Scenario C</span>
-              <span className="rounded-xs bg-critical/10 px-1.5 py-0.5 text-[10px] font-medium text-critical">
+              <span className="rounded-xs border border-critical/40 bg-critical/10 px-1.5 py-0.5 text-[11px] font-medium text-fg">
                 Key Leak / Divergence
               </span>
             </div>
-            <h4 className="mt-2 text-sm font-semibold">Signing key leak</h4>
+            <h3 className="mt-2 text-sm font-semibold">Signing key leak</h3>
             <p className="mt-1 text-xs text-muted">
-              The attacker spends using the leaked key. Arc reconciliation catches the phantom settlement between chain and ledger, and halts the agent.
+              The attacker spends using the leaked key. Arc reconciliation catches the phantom settlement between chain and ledger and, with the agent&rsquo;s wallet address on file, halts the agent.
             </p>
           </div>
           <div className="mt-4 pt-3 border-t border-border/50">
@@ -141,23 +152,44 @@ export function ScenarioRunner({ agentId }: { agentId: string }) {
               disabled={runningScenario !== null}
               onClick={() => runScenario("C")}
             >
-              {runningScenario === "C" ? "Simulating..." : "Run Scenario C"}
+              {runningScenario === "C" ? "Simulating…" : "Run Scenario C"}
             </Button>
           </div>
         </div>
       </div>
 
+      {error && (
+        <div className="mt-6 rounded-xs border border-critical/40 bg-critical/5 p-4 text-xs text-critical" role="alert">
+          {error}
+        </div>
+      )}
+
       {/* Result Output */}
       {result && (
-        <div className="mt-6 rounded-xs border border-signal/30 bg-bg p-4 animate-fadeIn">
+        <div role="status" className="mt-6 rounded-xs border border-signal/30 bg-bg p-4">
           <div className="flex items-center justify-between border-b border-border pb-2">
             <div className="flex items-center gap-2">
               <span className="h-2 w-2 rounded-full bg-signal" />
               <span className="font-semibold text-xs text-fg">{result.title}</span>
             </div>
             {result.status === "critical" && (
-              <span className="rounded-xs bg-critical px-2 py-0.5 font-mono text-[10px] font-bold text-paper">
-                CRITICAL ALERT
+              <span className="rounded-xs bg-critical px-2 py-0.5 font-mono text-[11px] font-bold text-on-critical">
+                CRITICAL · ILLUSTRATION
+              </span>
+            )}
+            {result.outcome === "stopped" && (
+              <span className="rounded-xs bg-signal/15 px-2 py-0.5 font-mono text-[11px] font-bold text-signal">
+                ALL STOPPED
+              </span>
+            )}
+            {result.outcome === "partial" && (
+              <span className="rounded-xs bg-held/15 px-2 py-0.5 font-mono text-[11px] font-bold text-held">
+                PARTIALLY STOPPED
+              </span>
+            )}
+            {result.outcome === "missed" && (
+              <span className="rounded-xs bg-critical px-2 py-0.5 font-mono text-[11px] font-bold text-on-critical">
+                NOT STOPPED
               </span>
             )}
           </div>
@@ -165,25 +197,32 @@ export function ScenarioRunner({ agentId }: { agentId: string }) {
 
           {result.records && result.records.length > 0 && (
             <div className="mt-4 max-h-48 overflow-y-auto rounded-xs border border-border bg-surface p-2">
-              <div className="text-[10px] text-muted font-mono mb-1">
-                Live telemetry stream generated ({result.records.length} records):
+              <div className="text-[11px] text-muted font-mono mb-1">
+                Simulated decisions ({result.records.length} records, nothing saved):
               </div>
               <div className="space-y-1 font-mono text-[11px]">
                 {result.records.slice(0, 8).map((r) => (
-                  <div key={r.id} className="flex items-center justify-between gap-3 border-b border-border/30 py-0.5">
-                    <span className="max-w-32 truncate text-muted" title={r.counterparty}>
+                  // A grid, not flex + space-between: with a long rule name on one
+                  // row the amount column used to jump sideways.
+                  <div
+                    key={r.id}
+                    className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1.3fr)] items-center gap-3 border-b border-border/30 py-0.5"
+                  >
+                    <span className="truncate text-muted" title={r.counterparty}>
                       {r.counterparty}
                     </span>
-                    <MonoNumber className="text-fg">{formatUsdcPrecise(r.amountMicroUsdc)} USDC</MonoNumber>
-                    <StatusInline tone={decisionTone(r.decision)}>
-                      {DECISION_LABELS[r.decision]}
-                      {r.ruleHit ? ` (${r.ruleHit})` : ""}
-                    </StatusInline>
+                    <MonoNumber className="text-right text-fg">{formatUsdcPrecise(r.amountMicroUsdc)} USDC</MonoNumber>
+                    <span className="truncate">
+                      <StatusInline tone={decisionTone(r.decision)}>
+                        {DECISION_LABELS[r.decision]}
+                        {r.ruleHit ? ` · ${r.ruleHit}` : ""}
+                      </StatusInline>
+                    </span>
                   </div>
                 ))}
                 {result.records.length > 8 && (
-                  <div className="text-center text-[10px] text-muted pt-1">
-                    ... and {result.records.length - 8} more records blocked ...
+                  <div className="text-center text-[11px] text-muted pt-1">
+                    …and {result.records.length - 8} more
                   </div>
                 )}
               </div>

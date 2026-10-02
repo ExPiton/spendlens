@@ -2,6 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import { Button } from "@/components/ui/Button";
 
 export function RescanButton() {
   const router = useRouter();
@@ -19,13 +20,14 @@ export function RescanButton() {
   }
 
   return (
-    <button
-      type="button"
-      onClick={rescan}
-      disabled={busy || pending}
-      className="rounded-xs border border-border bg-surface-2 px-3 py-1.5 text-xs text-fg transition-slens hover:border-fg disabled:opacity-50"
-    >
-      {busy || pending ? "Rescanning…" : "⟳ Rescan Arc settlement"}
-    </button>
+    <Button type="button" variant="secondary" size="sm" onClick={rescan} disabled={busy || pending}>
+      {busy || pending ? (
+        "Rescanning…"
+      ) : (
+        <>
+          <span aria-hidden="true">⟳</span> Rescan Arc settlement
+        </>
+      )}
+    </Button>
   );
 }

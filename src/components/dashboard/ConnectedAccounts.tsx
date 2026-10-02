@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { authClient } from "@/lib/auth/client";
+import { Button } from "@/components/ui/Button";
 
 type Provider = "github" | "google";
 const LABELS: Record<Provider, string> = { github: "GitHub", google: "Google" };
@@ -33,9 +34,14 @@ export function ConnectedAccounts({ providers }: { providers: Provider[] }) {
       <div className="rounded-md border border-border bg-surface p-5">
         <h2 className="text-sm font-semibold">Connected accounts</h2>
         <p className="mt-1 text-xs text-muted">
-          Google / GitHub sign-in isn&apos;t configured on this deployment. Set the
-          <code className="mx-1 font-mono">*_CLIENT_ID</code>/
-          <code className="mx-1 font-mono">*_CLIENT_SECRET</code> env vars to enable it.
+          Signing in with Google or GitHub isn&rsquo;t available here yet. You sign in with your email and password.
+          {process.env.NODE_ENV !== "production" && (
+            <>
+              {" "}
+              (Developers: set <code className="font-mono">GITHUB_*</code> / <code className="font-mono">GOOGLE_*</code>{" "}
+              client id + secret to enable it.)
+            </>
+          )}
         </p>
       </div>
     );
@@ -49,10 +55,14 @@ export function ConnectedAccounts({ providers }: { providers: Provider[] }) {
     <div className="rounded-md border border-border bg-surface p-5">
       <h2 className="text-sm font-semibold">Connected accounts</h2>
       <p className="mt-1 text-xs text-muted">
-        Sign in with any linked method — they all share this one account.
+        Sign in with any linked method. They all share this one account.
       </p>
 
-      {msg && <p className="mt-2 text-xs text-signal">{msg}</p>}
+      {msg && (
+        <p role="status" className="mt-2 text-xs text-signal">
+          {msg}
+        </p>
+      )}
 
       <ul className="mt-3 divide-y divide-border border-t border-border">
         {providers.map((provider) => {
@@ -68,13 +78,15 @@ export function ConnectedAccounts({ providers }: { providers: Provider[] }) {
                 {acct && <span className="ml-2 text-signal">· linked</span>}
               </span>
               {acct ? (
+                // A plain button, not <Button>: that one sets pointer-events: none
+                // when disabled, which would also kill the tooltip that says why.
                 <button
                   type="button"
                   disabled={!canUnlink || busy !== null}
                   title={
                     canUnlink
                       ? undefined
-                      : "Set a password first — this is your only way to sign in."
+                      : "Set a password first. This is your only way to sign in."
                   }
                   onClick={async () => {
                     setBusy(provider);
@@ -89,13 +101,14 @@ export function ConnectedAccounts({ providers }: { providers: Provider[] }) {
                       setReloadKey((k) => k + 1);
                     }
                   }}
-                  className="rounded-xs border border-border px-2.5 py-1 text-muted transition-slens hover:border-critical hover:text-critical disabled:opacity-40 disabled:hover:border-border disabled:hover:text-muted"
+                  className="rounded-xs border border-border px-2.5 py-1 text-muted transition-slens hover:border-critical hover:text-critical active:scale-[0.98] disabled:opacity-40 disabled:hover:border-border disabled:hover:text-muted disabled:active:scale-100"
                 >
                   Unlink
                 </button>
               ) : (
-                <button
+                <Button
                   type="button"
+                  size="sm"
                   disabled={busy !== null}
                   onClick={async () => {
                     setBusy(provider);
@@ -104,10 +117,9 @@ export function ConnectedAccounts({ providers }: { providers: Provider[] }) {
                       callbackURL: "/dashboard/settings",
                     });
                   }}
-                  className="rounded-xs bg-fg px-2.5 py-1 font-medium text-bg transition-slens hover:opacity-85 disabled:opacity-50"
                 >
                   {busy === provider ? "Redirecting…" : "Link"}
-                </button>
+                </Button>
               )}
             </li>
           );

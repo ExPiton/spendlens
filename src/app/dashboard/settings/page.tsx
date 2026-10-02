@@ -5,7 +5,7 @@ import { AccountSettings } from "@/components/dashboard/AccountSettings";
 import { ConnectedAccounts } from "@/components/dashboard/ConnectedAccounts";
 import { DangerZone } from "@/components/dashboard/DangerZone";
 
-export const metadata = { title: "Account settings · Spendlens" };
+export const metadata = { title: "Account settings" };
 
 export default async function SettingsPage() {
   const { user } = await requireUser();

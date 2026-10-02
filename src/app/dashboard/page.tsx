@@ -15,6 +15,8 @@ import { InteractiveDecisionsTable } from "@/components/dashboard/InteractiveDec
 import { NoAgents } from "@/components/dashboard/EmptyState";
 import { formatPeriod } from "@/lib/format";
 
+export const metadata = { title: "Overview" };
+
 interface DashboardPageProps {
   searchParams: Promise<{ agentId?: string }>;
 }
@@ -63,15 +65,16 @@ export default async function DashboardPage(props: DashboardPageProps) {
       <div className="flex flex-col gap-4 border-b border-border pb-6 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <div className="flex items-center gap-2 text-xs text-muted">
-            <span>Spendlens Dashboard</span>
-            <span>•</span>
+            <span>Overview</span>
+            <span aria-hidden="true">•</span>
             <span className="font-mono text-signal">{formatPeriod(start, end)}</span>
           </div>
           <h1 className="mt-1 text-2xl font-bold tracking-tight sm:text-3xl">
-            {currentAgentId === ALL_AGENTS
-              ? "All agents — spend summary"
-              : `${selectedLabel} (${currentAgentId})`}
+            {currentAgentId === ALL_AGENTS ? "All agents" : selectedLabel}
           </h1>
+          {currentAgentId !== ALL_AGENTS && (
+            <p className="mt-0.5 font-mono text-xs text-muted">{currentAgentId}</p>
+          )}
         </div>
 
         <AgentSwitcher options={options} currentAgentId={currentAgentId} />
@@ -96,10 +99,10 @@ export default async function DashboardPage(props: DashboardPageProps) {
         <div className="flex items-center justify-between border-b border-border pb-4">
           <div>
             <h2 className="text-sm font-semibold uppercase tracking-wide text-muted">
-              Recent decisions &amp; telemetry
+              Recent decisions
             </h2>
             <p className="mt-0.5 text-xs text-muted">
-              Every micropayment call the agent made and the policy decision it received.
+              The latest paid calls and what the policy decided. Select a row for the full record.
             </p>
           </div>
           <Link
@@ -108,7 +111,7 @@ export default async function DashboardPage(props: DashboardPageProps) {
             }`}
             className="rounded-xs border border-border px-3 py-1.5 text-xs text-muted transition-slens hover:border-fg hover:text-fg"
           >
-            View full ledger ({ledger.total} records) →
+            Full ledger ({ledger.total}) →
           </Link>
         </div>
 

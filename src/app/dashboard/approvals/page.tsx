@@ -2,8 +2,11 @@ import { requireVerifiedUser } from "@/lib/auth/dal";
 import { listEscalations } from "@/lib/db/escalations";
 import { decideEscalationAction } from "@/app/dashboard/actions";
 import { Table, Thead, Tbody, Tr, Th, Td } from "@/components/ui/Table";
+import { DecisionButtons } from "@/components/dashboard/DecisionButtons";
 import { MonoNumber } from "@/components/ui/MonoNumber";
 import { formatCounterparty, formatDateTime, formatUsdcPrecise } from "@/lib/format";
+
+export const metadata = { title: "Approvals" };
 
 export const dynamic = "force-dynamic";
 
@@ -29,7 +32,7 @@ export default async function ApprovalsPage() {
         <h1 className="mt-1 text-2xl font-bold tracking-tight">Payment approvals</h1>
         <p className="mt-1 max-w-3xl text-xs text-muted">
           A policy rule that resolves to <code className="font-mono">hold</code> sends the payment here.
-          The agent waits — nothing is signed — until you approve or deny it, or until the policy&apos;s{" "}
+          The agent waits, and nothing is signed, until you approve or deny it, or until the policy&rsquo;s{" "}
           <code className="font-mono">escalation.timeout_seconds</code> passes and{" "}
           <code className="font-mono">on_timeout</code> applies. Holds under{" "}
           <code className="font-mono">auto_approve_below_usdc</code> are approved without waiting.
@@ -37,9 +40,9 @@ export default async function ApprovalsPage() {
       </div>
 
       <section className="rounded-md border border-border bg-surface p-6">
-        <h3 className="text-sm font-semibold">
+        <h2 className="text-sm font-semibold">
           Waiting for you <span className="font-mono text-held">({pending.length})</span>
-        </h3>
+        </h2>
         {pending.length === 0 ? (
           <p className="mt-3 text-xs text-muted">No payments are waiting for approval.</p>
         ) : (
@@ -73,22 +76,9 @@ export default async function ApprovalsPage() {
                     <Td className="hidden font-mono text-[11px] lg:table-cell">{e.ruleHit ?? "—"}</Td>
                     <Td className="font-mono text-[11px] text-muted">{formatDateTime(e.expiresAt)}</Td>
                     <Td>
-                      <form action={decideEscalationAction} className="flex gap-2">
+                      <form action={decideEscalationAction}>
                         <input type="hidden" name="id" value={e.id} />
-                        <button
-                          name="decision"
-                          value="approve"
-                          className="rounded-xs bg-signal px-3 py-1 text-xs font-semibold text-ink hover:opacity-90"
-                        >
-                          Approve
-                        </button>
-                        <button
-                          name="decision"
-                          value="deny"
-                          className="rounded-xs border border-critical px-3 py-1 text-xs font-semibold text-critical hover:bg-critical/10"
-                        >
-                          Deny
-                        </button>
+                        <DecisionButtons />
                       </form>
                     </Td>
                   </Tr>
@@ -100,7 +90,7 @@ export default async function ApprovalsPage() {
       </section>
 
       <section className="rounded-md border border-border bg-surface p-6">
-        <h3 className="text-sm font-semibold">History</h3>
+        <h2 className="text-sm font-semibold">History</h2>
         {history.length === 0 ? (
           <p className="mt-3 text-xs text-muted">No decisions yet.</p>
         ) : (

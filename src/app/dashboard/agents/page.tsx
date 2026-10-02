@@ -1,17 +1,24 @@
 import Link from "next/link";
+import { LinkButton } from "@/components/ui/Button";
 import { requireVerifiedUser } from "@/lib/auth/dal";
 import { listAgents, getAgentLabels } from "@/lib/db/repository";
+import { listAgentRecords } from "@/lib/db/agents";
 import { NoAgents } from "@/components/dashboard/EmptyState";
 import { Table, Thead, Tbody, Tr, Th, Td } from "@/components/ui/Table";
 import { MonoNumber } from "@/components/ui/MonoNumber";
+import { StatusInline } from "@/components/ui/StatusPill";
 import { formatUsdcTotal, formatPercent, formatCount, formatDateTime } from "@/lib/format";
+
+export const metadata = { title: "Agents" };
 
 export default async function AgentsPage() {
   const { user } = await requireVerifiedUser();
-  const [agents, labels] = await Promise.all([
+  const [agents, labels, records] = await Promise.all([
     listAgents(user.id),
     getAgentLabels(user.id),
+    listAgentRecords(user.id),
   ]);
+  const statusBySlug = new Map(records.map((r) => [r.slug, r.status]));
 
   return (
     <div className="space-y-6">
@@ -19,19 +26,16 @@ export default async function AgentsPage() {
       <div className="flex flex-col gap-4 border-b border-border pb-6 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <span className="text-xs text-muted uppercase tracking-wider font-semibold">
-            Agent Fleet Management
+            Agents
           </span>
-          <h1 className="mt-1 text-2xl font-bold tracking-tight">Registered AI Agents</h1>
+          <h1 className="mt-1 text-2xl font-bold tracking-tight">Your agents</h1>
           <p className="mt-1 text-xs text-muted">
-            Spend, quality, and security status for every agent making autonomous micropayments on Arc.
+            Spend, waste and policy outcomes for every agent making micropayments on Arc.
           </p>
         </div>
-        <Link
-          href="/dashboard/agents/new"
-          className="shrink-0 rounded-sm bg-fg px-4 py-2 text-sm font-medium text-bg transition-slens hover:opacity-85"
-        >
+        <LinkButton href="/dashboard/agents/new" className="shrink-0">
           + New agent
-        </Link>
+        </LinkButton>
       </div>
 
       {agents.length === 0 && <NoAgents />}
@@ -43,15 +47,14 @@ export default async function AgentsPage() {
           <Table>
             <Thead>
               <Tr>
-                <Th>Agent ID</Th>
-                <Th>Role / Description</Th>
-                <Th align="right">Total Spend</Th>
-                <Th align="right">Unmatched (Wasted)</Th>
-                <Th align="right">Waste Ratio</Th>
+                <Th>Agent</Th>
+                <Th>Status</Th>
+                <Th align="right">Spend (USDC)</Th>
+                <Th align="right">Wasted (USDC)</Th>
+                <Th align="right">Waste</Th>
                 <Th align="right">Allow / Block / Hold</Th>
-                <Th align="right">Counterparties</Th>
-                <Th>Last Activity</Th>
-                <Th align="right">Action</Th>
+                <Th align="right" className="hidden xl:table-cell">Payees</Th>
+                <Th>Last activity (UTC)</Th>
               </Tr>
             </Thead>
             <Tbody>
@@ -61,14 +64,25 @@ export default async function AgentsPage() {
 
                 return (
                   <Tr key={a.agentId}>
-                    <Td className="font-mono font-medium text-xs">{a.agentId}</Td>
-                    <Td className="text-muted text-xs">{label}</Td>
+                    <Td>
+                      <Link href={`/dashboard/agents/${a.agentId}`} className="group block whitespace-nowrap">
+                        <span className="block text-sm font-medium group-hover:underline">{label}</span>
+                        <span className="block font-mono text-[11px] text-muted">{a.agentId}</span>
+                      </Link>
+                    </Td>
+                    <Td>
+                      {statusBySlug.get(a.agentId) === "paused" ? (
+                        <StatusInline tone="critical">halted</StatusInline>
+                      ) : (
+                        <StatusInline tone="signal">active</StatusInline>
+                      )}
+                    </Td>
                     <Td align="right">
-                      <MonoNumber className="font-semibold">{formatUsdcTotal(a.totalSpendMicroUsdc)} $</MonoNumber>
+                      <MonoNumber className="font-semibold">{formatUsdcTotal(a.totalSpendMicroUsdc)}</MonoNumber>
                     </Td>
                     <Td align="right">
                       <MonoNumber className={isHighWaste ? "text-critical font-bold" : "text-muted"}>
-                        {formatUsdcTotal(a.wastedMicroUsdc)} $
+                        {formatUsdcTotal(a.wastedMicroUsdc)}
                       </MonoNumber>
                     </Td>
                     <Td align="right">
@@ -83,19 +97,11 @@ export default async function AgentsPage() {
                         <span className="text-held">{formatCount(a.holdCount)}</span>
                       </MonoNumber>
                     </Td>
-                    <Td align="right">
+                    <Td align="right" className="hidden xl:table-cell">
                       <MonoNumber className="text-xs">{a.counterpartyCount}</MonoNumber>
                     </Td>
-                    <Td className="text-muted text-xs font-mono">
+                    <Td className="whitespace-nowrap text-muted text-xs font-mono">
                       {a.lastActivityTs ? formatDateTime(a.lastActivityTs) : "—"}
-                    </Td>
-                    <Td align="right">
-                      <Link
-                        href={`/dashboard/agents/${a.agentId}`}
-                        className="rounded-xs border border-border px-2.5 py-1 text-xs text-muted transition-slens hover:border-fg hover:text-fg"
-                      >
-                        Inspect →
-                      </Link>
                     </Td>
                   </Tr>
                 );

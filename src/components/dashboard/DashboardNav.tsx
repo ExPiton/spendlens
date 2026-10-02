@@ -45,7 +45,7 @@ export function DashboardNav({
           </Link>
           <div className="hidden h-5 w-px bg-border md:block" />
           <div className="hidden items-center gap-2 rounded-xs border border-signal/20 bg-signal/10 px-2 py-0.5 text-xs text-signal md:flex">
-            <span className="h-1.5 w-1.5 rounded-full bg-signal animate-pulse" />
+            <span className="h-1.5 w-1.5 rounded-full bg-signal" aria-hidden="true" />
             <span className="font-mono font-medium">{arcLabel}</span>
           </div>
         </div>
@@ -61,6 +61,7 @@ export function DashboardNav({
             href="/dashboard/settings"
             className="flex h-7 w-7 items-center justify-center rounded-full bg-surface-2 text-xs font-semibold text-fg transition-slens hover:opacity-80"
             title={userEmail}
+            aria-label={`Account settings (${userEmail})`}
           >
             {initial}
           </Link>
@@ -69,7 +70,7 @@ export function DashboardNav({
       </div>
 
       <div className="mx-auto max-w-7xl overflow-x-auto px-4 sm:px-6 scrollbar-none">
-        <nav className="flex gap-1 border-t border-border/50 py-1 text-xs font-medium">
+        <nav aria-label="Dashboard sections" className="flex gap-1 border-t border-border/50 py-1 text-xs font-medium">
           {TABS.map((tab) => {
             const isActive =
               tab.href === "/dashboard"
@@ -80,6 +81,7 @@ export function DashboardNav({
               <Link
                 key={tab.href}
                 href={tab.href}
+                aria-current={isActive ? "page" : undefined}
                 className={`whitespace-nowrap rounded-xs px-3 py-2 transition-slens ${
                   isActive
                     ? "bg-surface-2 text-fg font-semibold shadow-xs"
@@ -88,7 +90,7 @@ export function DashboardNav({
               >
                 {tab.label}
                 {tab.href === "/dashboard/approvals" && pendingApprovals > 0 && (
-                  <span className="ml-1.5 rounded-full bg-held px-1.5 py-px font-mono text-[10px] font-bold text-ink">
+                  <span className="ml-1.5 rounded-xs bg-held px-1.5 py-px font-mono text-[10px] font-bold text-ink">
                     {pendingApprovals}
                   </span>
                 )}

@@ -25,7 +25,8 @@ export function Th({
 }: ThHTMLAttributes<HTMLTableCellElement> & { align?: Align }) {
   return (
     <th
-      className={`border-b border-border px-3 py-2 text-xs font-medium tracking-wide text-muted uppercase ${
+      scope="col"
+      className={`border-b border-border px-3 py-2 text-xs font-medium tracking-wide whitespace-nowrap text-muted uppercase ${
         align === "right" ? "text-right" : "text-left"
       } ${className ?? ""}`}
       {...props}

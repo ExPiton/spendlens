@@ -6,6 +6,7 @@ import {
   deleteAgentAction,
   renameAgentAction,
 } from "@/app/dashboard/actions";
+import { Button } from "@/components/ui/Button";
 
 export function AgentControls({
   agentId,
@@ -29,25 +30,22 @@ export function AgentControls({
         className="flex items-center gap-2"
       >
         <input type="hidden" name="agentId" value={agentId} />
+        {/* autoFocus: the click on "Rename" just replaced the button with this
+            field, so focus would otherwise fall back to the top of the page. */}
         <input
           name="label"
           defaultValue={label}
+          aria-label="Display name"
+          autoComplete="off"
           autoFocus
-          className="rounded-xs border border-border bg-surface px-2 py-1 text-xs text-fg outline-none focus:border-signal"
+          className="field rounded-xs bg-surface px-2 py-1 text-xs text-fg"
         />
-        <button
-          type="submit"
-          className="rounded-xs bg-fg px-2.5 py-1 text-xs font-medium text-bg"
-        >
+        <Button type="submit" size="sm">
           Save
-        </button>
-        <button
-          type="button"
-          onClick={() => setRenaming(false)}
-          className="rounded-xs border border-border px-2.5 py-1 text-xs text-muted"
-        >
+        </Button>
+        <Button type="button" variant="secondary" size="sm" onClick={() => setRenaming(false)}>
           Cancel
-        </button>
+        </Button>
       </form>
     );
   }
@@ -57,7 +55,7 @@ export function AgentControls({
       <button
         type="button"
         onClick={() => setRenaming(true)}
-        className="rounded-xs border border-border px-3 py-1.5 text-xs text-muted transition-slens hover:border-fg hover:text-fg"
+        className="rounded-xs border border-border px-3 py-1.5 text-xs text-muted transition-slens hover:border-fg hover:text-fg active:scale-[0.98]"
       >
         Rename
       </button>
@@ -73,13 +71,13 @@ export function AgentControls({
           type="submit"
           className={
             status === "paused"
-              ? "rounded-xs border border-signal bg-signal/10 px-3 py-1.5 text-xs font-semibold text-signal transition-slens hover:bg-signal hover:text-ink"
-              : "rounded-xs border border-critical bg-critical/10 px-3 py-1.5 text-xs font-semibold text-critical transition-slens hover:bg-critical hover:text-paper"
+              ? "rounded-xs border border-signal bg-signal/10 px-3 py-1.5 text-xs font-semibold text-signal transition-slens hover:bg-signal hover:text-ink active:scale-[0.98]"
+              : "rounded-xs border border-critical bg-critical/10 px-3 py-1.5 text-xs font-semibold text-critical transition-slens hover:bg-critical hover:text-on-critical active:scale-[0.98]"
           }
           title={
             status === "paused"
-              ? "Resume ingest for this agent"
-              : "Reject new ingest for this agent (kill switch)"
+              ? "Let this agent’s guard sign payments again"
+              : "Kill switch: the agent’s guard refuses every payment before signing, within ~15 s. The ledger keeps recording."
           }
         >
           {status === "paused" ? "Resume agent" : "Halt agent (kill switch)"}
@@ -87,28 +85,24 @@ export function AgentControls({
       </form>
 
       {confirmDelete ? (
-        <form action={deleteAgentAction} className="flex items-center gap-1.5">
+        <form action={deleteAgentAction} className="flex flex-wrap items-center gap-1.5">
           <input type="hidden" name="agentId" value={agentId} />
-          <span className="text-xs text-critical">Delete {slug}?</span>
-          <button
-            type="submit"
-            className="rounded-xs bg-critical px-2.5 py-1 text-xs font-semibold text-paper"
-          >
+          <span role="alert" className="text-xs text-critical">
+            Delete {slug} with its ledger, keys and policy? This cannot be undone.
+          </span>
+          <Button type="submit" variant="danger" size="sm">
             Yes, delete
-          </button>
-          <button
-            type="button"
-            onClick={() => setConfirmDelete(false)}
-            className="rounded-xs border border-border px-2.5 py-1 text-xs text-muted"
-          >
+          </Button>
+          {/* Focus lands on the safe choice: the Delete button this replaced is gone. */}
+          <Button type="button" variant="secondary" size="sm" autoFocus onClick={() => setConfirmDelete(false)}>
             No
-          </button>
+          </Button>
         </form>
       ) : (
         <button
           type="button"
           onClick={() => setConfirmDelete(true)}
-          className="rounded-xs border border-border px-3 py-1.5 text-xs text-muted transition-slens hover:border-critical hover:text-critical"
+          className="rounded-xs border border-border px-3 py-1.5 text-xs text-muted transition-slens hover:border-critical hover:text-critical active:scale-[0.98]"
         >
           Delete
         </button>

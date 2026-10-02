@@ -14,6 +14,9 @@
 
   --color-ink: oklch(0.22 0.01 100);
   --color-signal: oklch(0.8 0.16 145);
+  /* Signal green as TEXT on the light paper background (the brand green is
+     ~1.6:1 there): same hue, darkened to clear 4.5:1. */
+  --color-signal-ink: oklch(0.5 0.13 145);
   --color-paper: oklch(0.97 0.006 95);
   --color-deep: oklch(0.2 0.012 150);
   --color-held: oklch(0.78 0.15 78);
@@ -38,6 +41,12 @@
   --color-surface-2: var(--slens-surface-2);
   --color-border: var(--slens-border);
   --color-muted: var(--slens-muted);
+  /* Text on a solid status-red fill: paper on the darker light-theme red,
+     ink on the lighter dark-theme red — either way ≥ 4.5:1. */
+  --color-on-critical: var(--slens-on-critical);
+  /* Outline of a text field / select, and the keyboard focus ring. */
+  --color-field: var(--slens-field);
+  --color-focus: var(--slens-focus);
 }
 
 :root {
@@ -46,10 +55,28 @@
   --slens-surface: oklch(1 0 0);
   --slens-surface-2: oklch(0.94 0.006 95);
   --slens-border: oklch(0.22 0.01 100 / 10%);
-  --slens-muted: oklch(0.22 0.01 100 / 56%);
+  /* 64%, not 56%: secondary text on the paper background measured 3.89:1 — below
+     WCAG AA's 4.5:1 for the body-size copy this colour is used on. */
+  --slens-muted: oklch(0.22 0.01 100 / 64%);
+  /* Status red is also used as TEXT (errors, "blocked"), so its lightness is
+     tuned per theme to clear 4.5:1: the brand value (L 0.63) measured 3.5:1
+     on paper here and 4.2:1 on the dark surface. Same hue, same role. */
+  --color-critical: oklch(0.55 0.2 26);
+  --slens-on-critical: var(--color-paper);
+  /* The outline that bounds an input is what tells you it is one, so it has to
+     clear 3:1 (WCAG 1.4.11) against both the page and the field's own fill —
+     the 10% hairline used for cards is ~1.2:1. Measured: 3.3:1 here. */
+  --slens-field: oklch(0.22 0.01 100 / 50%);
+  /* Focus ring. The brand green is 1.6:1 on paper, so on the light theme the
+     ring uses the text-safe green (5.2:1 on paper, 5.7:1 on white). */
+  --slens-focus: var(--color-signal-ink);
 }
 
 .theme-dark {
+  --color-critical: oklch(0.68 0.19 26);
+  --slens-on-critical: var(--color-ink);
+  --slens-field: oklch(0.97 0.006 95 / 40%);
+  --slens-focus: var(--color-signal);
   --slens-bg: var(--color-deep);
   --slens-fg: var(--color-paper);
   --slens-surface: oklch(0.245 0.014 150);
@@ -58,8 +85,25 @@
   --slens-muted: oklch(0.97 0.006 95 / 55%);
 }
 
-* {
-  border-color: var(--color-border);
+/* The default colour for any `border` / `divide` that doesn't name one
+   (Tailwind v4's own default is currentColor).
+
+   It has to sit in the base layer. It used to be a bare `* { … }` rule, and
+   unlayered CSS outranks every layered utility regardless of specificity: so
+   `border-critical`, `border-signal/30`, `hover:border-fg` and
+   `focus:border-signal` all computed to this hairline and never showed. Error
+   boxes had no red edge, hover states drew nothing, and a text field's only
+   focus cue (its outline was removed) was a border change that never happened. */
+@layer base {
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    /* `--slens-border`, not `--color-border`: that one is resolved once on
+       :root, so inside `.theme-dark` it kept the light theme's value. */
+    border-color: var(--slens-border);
+  }
 }
 
 html {
@@ -84,9 +128,31 @@ body {
   color: var(--color-ink);
 }
 
+/* No 300ms double-tap-zoom delay on taps; press feedback comes from the
+   controls' own active states instead of the grey WebKit flash. */
+a,
+button,
+summary,
+[role="button"] {
+  touch-action: manipulation;
+}
+html {
+  -webkit-tap-highlight-color: transparent;
+}
+
 :focus-visible {
-  outline: 2px solid var(--color-signal);
+  outline: 2px solid var(--slens-focus);
   outline-offset: 2px;
+}
+
+/* Tailwind v4's preflight resets buttons to `cursor: default`. */
+@layer base {
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]),
+  summary,
+  select:not(:disabled) {
+    cursor: pointer;
+  }
 }
 
 .tabular {
@@ -94,9 +160,45 @@ body {
   font-feature-settings: "tnum";
 }
 
+/* Properties are listed on purpose: a bare `transition-duration` leaves the
+   property at its initial value, `all`, which animates layout-affecting
+   properties too. */
 .transition-slens {
+  transition-property:
+    color, background-color, border-color, text-decoration-color, outline-color, opacity, box-shadow,
+    transform;
   transition-timing-function: var(--ease-slens);
   transition-duration: 120ms;
+}
+
+/* Text fields and selects: one outline and one focus treatment everywhere.
+   Padding, size and fill stay with the caller. */
+@utility field {
+  border: 1px solid var(--slens-field);
+  transition-property: border-color, outline-color;
+  transition-duration: 120ms;
+  transition-timing-function: var(--ease-slens);
+
+  &::placeholder {
+    color: var(--slens-muted);
+  }
+
+  &:focus-visible {
+    border-color: var(--slens-focus);
+  }
+
+  &:disabled {
+    opacity: 0.5;
+  }
+}
+
+/* Horizontally scrollable strips (the dashboard tabs) without a scrollbar. */
+@utility scrollbar-none {
+  scrollbar-width: none;
+
+  &::-webkit-scrollbar {
+    display: none;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -107,4 +209,95 @@ body {
     animation-iteration-count: 1 !important;
     transition-duration: 0.001ms !important;
   }
+}
+
+/* ── Marketing surfaces ─────────────────────────────────────────────────── */
+
+html {
+  scroll-behavior: smooth;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+}
+
+h1,
+h2,
+h3 {
+  text-wrap: balance;
+}
+
+p {
+  text-wrap: pretty;
+}
+
+/* Hairline grid that fades out from the top — gives the hero depth without
+   a decorative image. */
+.bg-grid {
+  background-image:
+    linear-gradient(to right, oklch(0.22 0.01 100 / 4%) 1px, transparent 1px),
+    linear-gradient(to bottom, oklch(0.22 0.01 100 / 4%) 1px, transparent 1px);
+  background-size: 56px 56px;
+  mask-image: radial-gradient(ellipse 80% 70% at 50% 0%, black 30%, transparent 85%);
+}
+
+/* Product windows: one light source (top), shadow tinted with the ink hue. */
+.shadow-window {
+  box-shadow:
+    0 1px 0 0 oklch(1 0 0 / 6%) inset,
+    0 40px 80px -30px oklch(0.2 0.012 150 / 45%),
+    0 18px 36px -18px oklch(0.2 0.012 150 / 30%);
+}
+
+.shadow-float {
+  box-shadow:
+    0 24px 48px -20px oklch(0.2 0.012 150 / 35%),
+    0 8px 16px -8px oklch(0.2 0.012 150 / 18%);
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.rise {
+  animation: rise 700ms var(--ease-slens) both;
+}
+
+/* Slide-over panels (the ledger's record drawer). transform + opacity only;
+   the reduced-motion block above collapses both to an instant change. */
+@keyframes drawer-in {
+  from {
+    opacity: 0;
+    transform: translateX(1.5rem);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.drawer-in {
+  animation: drawer-in 220ms var(--ease-slens) both;
+}
+
+.fade-in {
+  animation: fade-in 180ms linear both;
 }

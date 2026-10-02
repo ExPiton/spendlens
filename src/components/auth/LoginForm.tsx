@@ -4,6 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { authClient } from "@/lib/auth/client";
+import { Button } from "@/components/ui/Button";
 import { Field, FormError } from "./ui";
 
 export function LoginForm() {
@@ -13,7 +14,7 @@ export function LoginForm() {
 
   const oauthError =
     params.get("error") &&
-    "Sign-in with that provider didn't complete. Try again or use your email and password.";
+    "Sign-in with that provider didn’t complete. Try again or use your email and password.";
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -46,32 +47,35 @@ export function LoginForm() {
       <FormError>{error || oauthError}</FormError>
       <Field
         label="Email"
+        name="email"
         type="email"
         autoComplete="email"
+        autoCapitalize="none"
+        spellCheck={false}
         required
         value={email}
         onChange={(e) => setEmail(e.target.value)}
       />
       <Field
         label="Password"
+        name="password"
         type="password"
         autoComplete="current-password"
         required
         value={password}
         onChange={(e) => setPassword(e.target.value)}
         hint={
-          <Link href="/forgot-password" className="font-normal text-muted underline hover:text-fg">
-            Forgot?
+          <Link
+            href="/forgot-password"
+            className="font-normal underline underline-offset-2 transition-slens hover:text-fg"
+          >
+            Forgot password?
           </Link>
         }
       />
-      <button
-        type="submit"
-        disabled={pending}
-        className="w-full rounded-sm bg-fg px-4 py-2.5 text-sm font-medium text-bg transition-slens hover:opacity-85 disabled:opacity-50"
-      >
+      <Button type="submit" disabled={pending} className="w-full">
         {pending ? "Signing in…" : "Sign in"}
-      </button>
+      </Button>
     </form>
   );
 }

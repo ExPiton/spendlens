@@ -17,22 +17,19 @@ export async function LivePreview() {
   const { start, end } = getPeriod();
 
   return (
-    <section className="border-t border-border">
-      <div className="mx-auto max-w-6xl px-6 py-24">
+    <section id="preview" className="scroll-mt-16 border-t border-border">
+      <div className="mx-auto max-w-6xl px-6 py-28">
         <div className="max-w-2xl">
-          <p className="text-xs font-medium tracking-[0.14em] text-muted uppercase">
-            Sample dashboard
-          </p>
-          <h2 className="mt-3 text-3xl font-semibold tracking-tight sm:text-4xl">
-            Four numbers. Then quiet.
+          <h2 className="text-3xl leading-tight font-semibold tracking-[-0.025em] sm:text-[2.6rem]">
+            Spend, waste and risk: four numbers, then the detail.
           </h2>
-          <p className="mt-4 text-muted">
-            The screen below is rendered with the dashboard&rsquo;s real
-            components on a sample dataset — not a static image.
+          <p className="mt-5 text-muted">
+            What your agents paid, how much of it bought nothing, what was stopped, and whether the chain agrees
+            with your ledger. Shown here with the real dashboard components on sample data.
           </p>
         </div>
 
-        <div className="theme-dark mt-10 overflow-hidden rounded-md border border-border bg-bg text-fg">
+        <div translate="no" className="theme-dark shadow-window mt-14 overflow-hidden rounded-xl border border-border bg-bg text-fg">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-6 py-4">
             <div className="flex items-center gap-3">
               <Logo size={22} />
@@ -43,9 +40,7 @@ export async function LivePreview() {
           <div className="p-6">
             <OverviewStatsRow stats={stats} />
             <div className="mt-8">
-              <p className="mb-3 text-xs font-medium tracking-wide text-muted uppercase">
-                Recent decisions
-              </p>
+              <p className="mb-3 text-sm font-medium text-muted">Recent decisions</p>
               <DecisionsTable records={ledger.records} />
             </div>
           </div>

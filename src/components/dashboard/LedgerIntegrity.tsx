@@ -17,11 +17,11 @@ export function LedgerIntegrity({
     <div className="rounded-md border border-border bg-surface p-6">
       <div className="flex flex-col gap-1 border-b border-border pb-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <h3 className="text-sm font-semibold">Ledger integrity</h3>
+          <h2 className="text-sm font-semibold">Ledger integrity</h2>
           <p className="mt-0.5 max-w-3xl text-xs text-muted">
-            The ledger is append-only in the database. Each day&apos;s rows are also sealed into a
-            SHA-256 hash chain — changing any past row breaks that day&apos;s digest and every one after
-            it. Anchored digests are written on Arc, outside this server&apos;s control.
+            The ledger is append-only in the database. Each day&rsquo;s rows are also sealed into a
+            SHA-256 hash chain: changing any past row breaks that day&rsquo;s digest and every one after
+            it. Anchored digests are written on Arc, outside this server&rsquo;s control.
           </p>
         </div>
         <span

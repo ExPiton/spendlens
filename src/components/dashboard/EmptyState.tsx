@@ -1,5 +1,5 @@
-import Link from "next/link";
 import { seedDemoDataAction } from "@/app/dashboard/actions";
+import { Button, LinkButton } from "@/components/ui/Button";
 
 /** Shown on every data screen until the tenant has at least one agent. */
 export function NoAgents({ compact = false }: { compact?: boolean }) {
@@ -15,19 +15,11 @@ export function NoAgents({ compact = false }: { compact?: boolean }) {
         to explore every screen with realistic data first.
       </p>
       <div className="mt-5 flex flex-wrap items-center justify-center gap-3">
-        <Link
-          href="/dashboard/agents/new"
-          className="rounded-sm bg-fg px-4 py-2 text-sm font-medium text-bg transition-slens hover:opacity-85"
-        >
-          Register an agent
-        </Link>
+        <LinkButton href="/dashboard/agents/new">Register an agent</LinkButton>
         <form action={seedDemoDataAction}>
-          <button
-            type="submit"
-            className="rounded-sm border border-border px-4 py-2 text-sm font-medium text-fg transition-slens hover:bg-surface-2"
-          >
+          <Button type="submit" variant="secondary">
             Load sample data
-          </button>
+          </Button>
         </form>
       </div>
     </div>

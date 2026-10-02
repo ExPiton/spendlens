@@ -15,29 +15,47 @@ export function AuthHeading({
   );
 }
 
+/**
+ * A labelled input. The label and the hint are siblings, not parent and
+ * child: a hint inside the <label> (the "Forgot password?" link, "8+
+ * characters") becomes part of the input's accessible name, so a screen reader
+ * announced "Password Forgot?" for the field.
+ *
+ * `name` is required and doubles as the id, so the label stays tied to its
+ * input without a hook.
+ */
 export function Field({
   label,
   hint,
+  name,
+  className,
   ...props
-}: InputHTMLAttributes<HTMLInputElement> & { label: string; hint?: ReactNode }) {
+}: Omit<InputHTMLAttributes<HTMLInputElement>, "name"> & {
+  label: string;
+  name: string;
+  hint?: ReactNode;
+}) {
+  const id = `field-${name}`;
   return (
-    <label className="block">
-      <span className="mb-1.5 flex items-center justify-between text-xs font-medium text-muted">
-        {label}
+    <div>
+      <div className="mb-1.5 flex items-center justify-between gap-3 text-xs font-medium text-muted">
+        <label htmlFor={id}>{label}</label>
         {hint}
-      </span>
+      </div>
       <input
-        className="w-full rounded-sm border border-border bg-surface px-3 py-2 text-sm text-fg outline-none transition-slens placeholder:text-muted/60 focus:border-signal"
+        id={id}
+        name={name}
+        className={`field w-full rounded-sm bg-surface px-3 py-2 text-sm text-fg ${className ?? ""}`}
         {...props}
       />
-    </label>
+    </div>
   );
 }
 
 export function FormError({ children }: { children?: ReactNode }) {
   if (!children) return null;
   return (
-    <p className="rounded-sm border border-critical/30 bg-critical/10 px-3 py-2 text-xs text-critical">
+    <p role="alert" className="rounded-sm border border-critical/30 bg-critical/10 px-3 py-2 text-xs text-critical">
       {children}
     </p>
   );
@@ -46,7 +64,7 @@ export function FormError({ children }: { children?: ReactNode }) {
 export function FormNotice({ children }: { children?: ReactNode }) {
   if (!children) return null;
   return (
-    <p className="rounded-sm border border-signal/30 bg-signal/10 px-3 py-2 text-xs text-fg">
+    <p role="status" className="rounded-sm border border-signal/30 bg-signal/10 px-3 py-2 text-xs text-fg">
       {children}
     </p>
   );

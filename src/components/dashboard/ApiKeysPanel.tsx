@@ -9,8 +9,44 @@ import {
 } from "@/app/dashboard/actions";
 import type { ApiKeyView } from "@/lib/db/api-keys";
 import { formatDateTime } from "@/lib/format";
+import { Button } from "@/components/ui/Button";
 
 const initial: ActionState = {};
+
+/** Revoking is permanent (a revoked key can't be un-revoked) and cuts off
+ *  whichever agent still uses it, so it takes a second, explicit click. */
+function RevokeKeyButton({ keyId, name }: { keyId: string; name: string }) {
+  const [confirming, setConfirming] = useState(false);
+
+  if (!confirming) {
+    return (
+      <button
+        type="button"
+        onClick={() => setConfirming(true)}
+        aria-label={`Revoke key ${name}`}
+        className="shrink-0 rounded-xs border border-border px-2 py-1 text-muted transition-slens hover:border-critical hover:text-critical active:scale-[0.98]"
+      >
+        Revoke
+      </button>
+    );
+  }
+
+  return (
+    <form action={revokeApiKeyAction} className="flex flex-wrap items-center gap-1.5">
+      <input type="hidden" name="keyId" value={keyId} />
+      <span role="alert" className="text-critical">
+        Revoke &ldquo;{name}&rdquo;? Agents using it can no longer report.
+      </span>
+      <Button type="submit" variant="danger" size="sm">
+        Revoke key
+      </Button>
+      {/* Focus lands on the safe choice: the Revoke button this replaced is gone. */}
+      <Button type="button" variant="secondary" size="sm" autoFocus onClick={() => setConfirming(false)}>
+        Cancel
+      </Button>
+    </form>
+  );
+}
 
 export function ApiKeysPanel({
   agentId,
@@ -26,7 +62,7 @@ export function ApiKeysPanel({
   appUrl: string;
 }) {
   const [state, formAction, pending] = useActionState(createApiKeyAction, initial);
-  const [copied, setCopied] = useState(false);
+  const [copy, setCopy] = useState<"idle" | "copied" | "failed">("idle");
 
   const active = keys.filter((k) => !k.revokedAt);
   const base = appUrl.replace(/\/$/, "");
@@ -36,23 +72,34 @@ export function ApiKeysPanel({
 
 const pay = guard({
   agentId: "${slug}",
-  // reads SPENDLENS_API_KEY + SPENDLENS_URL from the environment:
-  apiKey: process.env.SPENDLENS_API_KEY,
-  sink: "${base}",
-  // policy: yamlString,   // optional — permissive by default, tighten on the Policies tab
-  // signer: createLocalSigner(process.env.AGENT_PRIVATE_KEY),  // for real payments
+  apiKey: process.env.SPENDLENS_API_KEY,   // shown once, when you create a key
+  sink: "${ingestUrl}",
+  // No \`policy\` here → the guard follows this agent's policy from the Policies tab, live.
+  // signer: createLocalSigner(process.env.AGENT_PRIVATE_KEY),  // required for real payments
 });
 
 // use pay.fetch wherever the agent would call a paid API:
 const res = await pay.fetch("https://api.example.io/v1/data", { taskId: "task-001" });`;
 
+  async function copySecret(secret: string) {
+    try {
+      await navigator.clipboard.writeText(secret);
+      setCopy("copied");
+    } catch {
+      // Insecure origin or a denied permission: the key is `select-all`, so
+      // say so instead of claiming it was copied.
+      setCopy("failed");
+    }
+    setTimeout(() => setCopy("idle"), 2000);
+  }
+
   return (
     <div className="rounded-md border border-border bg-surface p-6">
       <div className="border-b border-border pb-3">
-        <h3 className="text-sm font-semibold">SDK connection &amp; API keys</h3>
+        <h2 className="text-sm font-semibold">SDK connection &amp; API keys</h2>
         <p className="mt-0.5 text-xs text-muted">
-          Keys authenticate this agent&apos;s ingest calls. The full key is shown
-          once — store it as <code className="font-mono">SPENDLENS_API_KEY</code>.
+          Keys authenticate this agent&rsquo;s ingest calls. The full key is shown
+          once, so store it as <code className="font-mono">SPENDLENS_API_KEY</code>.
         </p>
       </div>
 
@@ -67,7 +114,7 @@ const res = await pay.fetch("https://api.example.io/v1/data", { taskId: "task-00
           Or grab one file:{" "}
           <a
             href={`${base}/downloads/spendlens-sdk.mjs`}
-            className="underline hover:text-fg"
+            className="underline transition-slens hover:text-fg"
           >
             spendlens-sdk.mjs
           </a>
@@ -75,25 +122,26 @@ const res = await pay.fetch("https://api.example.io/v1/data", { taskId: "task-00
           <code className="font-mono">SPENDLENS_API_KEY=</code> your key.
         </p>
         <div className="mt-2 text-[11px] font-medium uppercase tracking-wide text-muted">
-          2. Wrap the agent&apos;s fetch
+          2. Wrap the agent&rsquo;s fetch
         </div>
         <pre className="overflow-x-auto rounded-xs bg-surface-2 p-3 font-mono text-[11px] leading-relaxed text-muted">
           {snippet}
         </pre>
         <div className="flex flex-wrap items-center gap-2 pt-1">
           <span className="text-[11px] text-muted">Ingest URL:</span>
-          <code className="rounded-xs bg-surface-2 px-2 py-1 font-mono text-[11px] text-fg">
+          <code className="rounded-xs bg-surface-2 px-2 py-1 font-mono text-[11px] break-all text-fg">
             {ingestUrl}
           </code>
           <form action={sendTestEventAction} className="ml-auto">
             <input type="hidden" name="slug" value={slug} />
-            <button
+            <Button
               type="submit"
-              className="rounded-xs border border-border px-2.5 py-1 text-xs text-fg transition-slens hover:bg-surface-2"
+              variant="secondary"
+              size="sm"
               title="Writes one sample authorization so you can see the ledger react"
             >
               Send test event
-            </button>
+            </Button>
           </form>
         </div>
       </div>
@@ -101,30 +149,26 @@ const res = await pay.fetch("https://api.example.io/v1/data", { taskId: "task-00
       {/* freshly-created secret */}
       {state.secret && (
         <div className="mt-4 rounded-xs border border-signal/40 bg-signal/10 p-3">
-          <p className="text-xs font-semibold text-fg">
-            New key — copy it now, it won&apos;t be shown again:
+          {/* The live region announces the instruction, never the secret itself. */}
+          <p role="status" className="text-xs font-semibold text-fg">
+            New key: copy it now, it won&rsquo;t be shown again.
           </p>
           <div className="mt-2 flex items-center gap-2">
-            <code className="flex-1 overflow-x-auto rounded-xs bg-bg px-2 py-1.5 font-mono text-xs text-signal">
+            <code className="flex-1 overflow-x-auto rounded-xs bg-bg px-2 py-1.5 font-mono text-xs text-signal select-all">
               {state.secret}
             </code>
-            <button
-              type="button"
-              onClick={() => {
-                navigator.clipboard?.writeText(state.secret!);
-                setCopied(true);
-                setTimeout(() => setCopied(false), 1500);
-              }}
-              className="rounded-xs border border-border px-2.5 py-1.5 text-xs text-fg hover:bg-surface-2"
-            >
-              {copied ? "Copied" : "Copy"}
-            </button>
+            <Button type="button" variant="secondary" size="sm" onClick={() => copySecret(state.secret!)}>
+              {copy === "copied" ? "Copied" : copy === "failed" ? "Copy failed" : "Copy"}
+            </Button>
           </div>
         </div>
       )}
 
       {state.error && (
-        <p className="mt-3 rounded-xs border border-critical/30 bg-critical/10 px-3 py-2 text-xs text-critical">
+        <p
+          role="alert"
+          className="mt-3 rounded-xs border border-critical/30 bg-critical/10 px-3 py-2 text-xs text-critical"
+        >
           {state.error}
         </p>
       )}
@@ -134,17 +178,15 @@ const res = await pay.fetch("https://api.example.io/v1/data", { taskId: "task-00
         <input type="hidden" name="agentId" value={agentId} />
         <input
           name="name"
+          aria-label="Key name"
           placeholder="Key name (e.g. production)"
+          autoComplete="off"
           required
-          className="min-w-48 flex-1 rounded-xs border border-border bg-bg px-2.5 py-1.5 text-xs text-fg outline-none focus:border-signal"
+          className="field min-w-0 flex-1 rounded-xs bg-bg px-2.5 py-1.5 text-xs text-fg sm:min-w-48"
         />
-        <button
-          type="submit"
-          disabled={pending}
-          className="rounded-xs bg-fg px-3 py-1.5 text-xs font-medium text-bg transition-slens hover:opacity-85 disabled:opacity-50"
-        >
+        <Button type="submit" size="sm" disabled={pending}>
           {pending ? "Creating…" : "Create key"}
-        </button>
+        </Button>
       </form>
 
       {/* key list */}
@@ -153,7 +195,7 @@ const res = await pay.fetch("https://api.example.io/v1/data", { taskId: "task-00
           {active.map((k) => (
             <li
               key={k.id}
-              className="flex items-center justify-between gap-3 py-2.5 text-xs"
+              className="flex flex-wrap items-center justify-between gap-3 py-2.5 text-xs"
             >
               <div className="min-w-0">
                 <span className="font-medium text-fg">{k.name}</span>
@@ -165,15 +207,7 @@ const res = await pay.fetch("https://api.example.io/v1/data", { taskId: "task-00
                     : " · never used"}
                 </span>
               </div>
-              <form action={revokeApiKeyAction}>
-                <input type="hidden" name="keyId" value={k.id} />
-                <button
-                  type="submit"
-                  className="shrink-0 rounded-xs border border-border px-2 py-1 text-muted transition-slens hover:border-critical hover:text-critical"
-                >
-                  Revoke
-                </button>
-              </form>
+              <RevokeKeyButton keyId={k.id} name={k.name} />
             </li>
           ))}
         </ul>

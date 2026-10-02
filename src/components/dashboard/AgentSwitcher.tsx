@@ -34,17 +34,21 @@ export function AgentSwitcher({ options, currentAgentId }: AgentSwitcherProps) {
     });
   }
 
+  // `min-w-0` + `flex-1` let the select shrink to the row: sized by its
+  // longest option ("Research crawler (research-crawler-01)") it was 417px
+  // wide and pushed every page that has a switcher past a 390px screen.
   return (
-    <div className="flex items-center gap-2">
-      <label htmlFor="agent-select" className="text-xs text-muted">
+    <div className="flex w-full min-w-0 items-center gap-2 sm:w-auto">
+      <label htmlFor="agent-select" className="shrink-0 text-xs text-muted">
         Agent:
       </label>
       <select
         id="agent-select"
+        name="agent"
         value={currentAgentId}
         disabled={isPending}
         onChange={(e) => handleChange(e.target.value)}
-        className="rounded-xs border border-border bg-surface px-2.5 py-1 font-mono text-xs text-fg transition-slens focus:border-signal focus:outline-none disabled:opacity-50"
+        className="field min-w-0 flex-1 truncate rounded-xs bg-surface px-2.5 py-1 font-mono text-xs text-fg sm:flex-none"
       >
         {options.map((opt) => (
           <option key={opt.id} value={opt.id}>

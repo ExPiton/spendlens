@@ -3,7 +3,7 @@ import { Table, Thead, Tbody, Tr, Th, Td } from "@/components/ui/Table";
 import { MonoNumber } from "@/components/ui/MonoNumber";
 import { StatusInline } from "@/components/ui/StatusPill";
 import { decisionTone, DECISION_LABELS, noteFor } from "@/lib/status";
-import { formatResource, formatTime, formatUsdcPrecise } from "@/lib/format";
+import { formatDateTime, formatResource, formatUsdcPrecise } from "@/lib/format";
 
 interface DecisionsTableProps {
   records: AuthorizationRecord[];
@@ -22,7 +22,7 @@ export function DecisionsTable({ records, showAgent = false, emptyMessage = "No 
       <Table>
         <Thead>
           <Tr>
-            <Th>Time</Th>
+            <Th>Time (UTC)</Th>
             {showAgent && <Th>Agent</Th>}
             <Th>Resource</Th>
             <Th align="right">Amount (USDC)</Th>
@@ -36,16 +36,16 @@ export function DecisionsTable({ records, showAgent = false, emptyMessage = "No 
             return (
               <Tr key={r.id}>
                 <Td>
-                  <MonoNumber className="text-muted">{formatTime(r.ts)}</MonoNumber>
+                  <MonoNumber className="whitespace-nowrap text-muted">{formatDateTime(r.ts)}</MonoNumber>
                 </Td>
-                {showAgent && <Td className="text-muted">{r.agentId}</Td>}
+                {showAgent && <Td className="whitespace-nowrap font-mono text-xs text-muted">{r.agentId}</Td>}
                 <Td className="max-w-56 truncate font-mono text-xs" title={r.resource}>
                   {formatResource(r.resource)}
                 </Td>
                 <Td align="right">
                   <MonoNumber>{formatUsdcPrecise(r.amountMicroUsdc)}</MonoNumber>
                 </Td>
-                <Td>
+                <Td className="whitespace-nowrap">
                   <StatusInline tone={decisionTone(r.decision)}>
                     {DECISION_LABELS[r.decision]}
                   </StatusInline>

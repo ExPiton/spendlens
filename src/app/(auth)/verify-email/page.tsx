@@ -4,7 +4,7 @@ import { getOptionalUser } from "@/lib/auth/dal";
 import { AuthHeading } from "@/components/auth/ui";
 import { VerifyEmailPanel } from "@/components/auth/VerifyEmailPanel";
 
-export const metadata = { title: "Verify your email · Spendlens" };
+export const metadata = { title: "Verify your email" };
 
 export default async function VerifyEmailPage() {
   const session = await getOptionalUser();

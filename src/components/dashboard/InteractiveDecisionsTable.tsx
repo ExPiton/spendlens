@@ -6,7 +6,7 @@ import { Table, Thead, Tbody, Tr, Th, Td } from "@/components/ui/Table";
 import { MonoNumber } from "@/components/ui/MonoNumber";
 import { StatusInline } from "@/components/ui/StatusPill";
 import { decisionTone, DECISION_LABELS, noteFor, qualityTone, QUALITY_LABELS } from "@/lib/status";
-import { formatResource, formatTime, formatUsdcPrecise } from "@/lib/format";
+import { formatDateTime, formatResource, formatUsdcPrecise } from "@/lib/format";
 import { TelemetryDrawer } from "./TelemetryDrawer";
 
 interface InteractiveDecisionsTableProps {
@@ -32,14 +32,13 @@ export function InteractiveDecisionsTable({
         <Table>
           <Thead>
             <Tr>
-              <Th>Time</Th>
+              <Th>Time (UTC)</Th>
               {showAgent && <Th>Agent</Th>}
-              <Th>Resource / Counterparty</Th>
+              <Th>Resource</Th>
               <Th align="right">Amount (USDC)</Th>
               <Th>Decision</Th>
               <Th>Quality</Th>
-              <Th>Triggered Rule / Note</Th>
-              <Th align="right">Detail</Th>
+              <Th>Rule / note</Th>
             </Tr>
           </Thead>
           <Tbody>
@@ -52,21 +51,35 @@ export function InteractiveDecisionsTable({
                   onClick={() => setSelectedRecord(r)}
                 >
                   <Td>
-                    <MonoNumber className="text-muted">{formatTime(r.ts)}</MonoNumber>
+                    {/* The timestamp is the keyboard way in to the record (the
+                        whole row is clickable for a mouse) — it replaces a
+                        separate "Inspect" column that pushed the table past
+                        the viewport on laptop screens. */}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedRecord(r);
+                      }}
+                      aria-label={`Open the record: ${DECISION_LABELS[r.decision]}, ${formatResource(r.resource)}, ${formatDateTime(r.ts)} UTC`}
+                      className="inline-flex min-h-6 items-center font-mono tabular whitespace-nowrap text-muted underline-offset-2 transition-slens hover:text-fg hover:underline"
+                    >
+                      {formatDateTime(r.ts)}
+                    </button>
                   </Td>
-                  {showAgent && <Td className="text-muted">{r.agentId}</Td>}
-                  <Td className="max-w-56 truncate font-mono text-xs" title={r.resource}>
+                  {showAgent && <Td className="whitespace-nowrap font-mono text-xs text-muted">{r.agentId}</Td>}
+                  <Td className="max-w-48 truncate font-mono text-xs" title={r.resource}>
                     {formatResource(r.resource)}
                   </Td>
                   <Td align="right">
                     <MonoNumber>{formatUsdcPrecise(r.amountMicroUsdc)}</MonoNumber>
                   </Td>
-                  <Td>
+                  <Td className="whitespace-nowrap">
                     <StatusInline tone={decisionTone(r.decision)}>
                       {DECISION_LABELS[r.decision]}
                     </StatusInline>
                   </Td>
-                  <Td>
+                  <Td className="whitespace-nowrap">
                     {r.quality ? (
                       <StatusInline tone={qualityTone(r.quality)}>
                         {QUALITY_LABELS[r.quality]}
@@ -75,7 +88,7 @@ export function InteractiveDecisionsTable({
                       <span className="text-muted text-xs">—</span>
                     )}
                   </Td>
-                  <Td className="text-muted">
+                  <Td className="max-w-48 truncate text-muted" title={note ?? undefined}>
                     {note ? (
                       <code className="rounded-xs bg-bg px-1.5 py-0.5 font-mono text-xs">
                         {note}
@@ -83,17 +96,6 @@ export function InteractiveDecisionsTable({
                     ) : (
                       "—"
                     )}
-                  </Td>
-                  <Td align="right">
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setSelectedRecord(r);
-                      }}
-                      className="rounded-xs border border-border px-2 py-0.5 text-[11px] text-muted hover:border-fg hover:text-fg"
-                    >
-                      Inspect
-                    </button>
                   </Td>
                 </Tr>
               );

@@ -7,6 +7,7 @@ interface WasteCalloutProps {
   wastedRatio: number;
 }
 
+/** One plain sentence about what the spend bought — no scorecard theatrics. */
 export function WasteCallout({
   agentName = "The agent",
   totalSpendMicroUsdc,
@@ -14,42 +15,40 @@ export function WasteCallout({
   wastedRatio,
 }: WasteCalloutProps) {
   const isHighWaste = wastedRatio > 0.15;
+  const none = wastedMicroUsdc === 0;
 
   return (
-    <div
-      className={`relative overflow-hidden rounded-md border p-6 transition-slens ${
-        isHighWaste
-          ? "border-critical/30 bg-critical/5 text-fg"
-          : "border-border bg-surface text-fg"
+    <section
+      aria-label="Waste analysis"
+      className={`rounded-md border p-6 ${
+        isHighWaste ? "border-critical/30 bg-critical/5" : "border-border bg-surface"
       }`}
     >
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <span className="text-xs font-semibold tracking-wider text-muted uppercase">
-            Waste Analysis
-          </span>
-          <p className="mt-1 text-xl font-semibold tracking-tight sm:text-2xl">
-            &ldquo;{agentName} spent{" "}
-            <span className="font-mono text-fg font-bold">
-              {formatUsdcPrecise(totalSpendMicroUsdc)} USDC
-            </span>{" "}
-            this period. Of that,{" "}
-            <span className="font-mono text-critical font-bold">
-              {formatUsdcPrecise(wastedMicroUsdc)} USDC
-            </span>{" "}
-            ({formatPercent(wastedRatio)}) went unmatched.&rdquo;
+          <h2 className="text-xs font-semibold tracking-wider text-muted uppercase">Waste analysis</h2>
+          <p className="mt-1 text-lg font-semibold tracking-tight sm:text-xl">
+            {agentName} spent{" "}
+            <span className="font-mono">{formatUsdcPrecise(totalSpendMicroUsdc)} USDC</span> this period.{" "}
+            {none ? (
+              <>Every paid call got a usable response.</>
+            ) : (
+              <>
+                <span className={`font-mono ${isHighWaste ? "text-critical" : ""}`}>
+                  {formatUsdcPrecise(wastedMicroUsdc)} USDC
+                </span>{" "}
+                ({formatPercent(wastedRatio)}) paid for responses that were empty, failed, too slow or
+                off-schema.
+              </>
+            )}
           </p>
         </div>
 
-        <div className="mt-4 shrink-0 sm:mt-0">
-          <div className="rounded-xs border border-border bg-surface-2 px-4 py-2 text-right">
-            <span className="text-[10px] text-muted uppercase">Efficiency Score</span>
-            <div className="font-mono text-xl font-bold text-signal">
-              {formatPercent(1 - wastedRatio)}
-            </div>
-          </div>
+        <div className="shrink-0 rounded-xs border border-border bg-surface-2 px-4 py-2 sm:text-right">
+          <span className="text-[11px] text-muted uppercase">Useful spend</span>
+          <div className="font-mono text-xl font-semibold">{formatPercent(1 - wastedRatio)}</div>
         </div>
       </div>
-    </div>
+    </section>
   );
 }

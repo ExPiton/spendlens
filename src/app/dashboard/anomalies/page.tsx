@@ -11,6 +11,8 @@ import { AgentSwitcher } from "@/components/dashboard/AgentSwitcher";
 import { InteractiveDecisionsTable } from "@/components/dashboard/InteractiveDecisionsTable";
 import { isColdStart } from "@/lib/engine/anomaly";
 
+export const metadata = { title: "Anomalies & rate" };
+
 interface AnomaliesPageProps {
   searchParams: Promise<{ agentId?: string }>;
 }
@@ -66,6 +68,10 @@ export default async function AnomaliesPage(props: AnomaliesPageProps) {
 
   const minutesSinceFirst = minutesSince(activity?.firstActivityTs ?? null);
   const coldStart = activity ? isColdStart(activity.totalCount, minutesSinceFirst) : null;
+  // Progress toward each warm-up threshold, capped: an agent 15 days old used
+  // to read "22801/30 min" while still waiting on its call count.
+  const callsDone = Math.min(activity?.totalCount ?? 0, 200);
+  const minutesDone = Math.min(Math.floor(minutesSinceFirst), 30);
 
   return (
     <div className="space-y-8">
@@ -73,11 +79,13 @@ export default async function AnomaliesPage(props: AnomaliesPageProps) {
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between border-b border-border pb-6">
         <div>
           <span className="text-xs text-muted uppercase tracking-wider font-semibold">
-            Security Layer — Anomaly Detection
+            Anomalies
           </span>
-          <h1 className="mt-1 text-2xl font-bold tracking-tight">Anomaly &amp; Burn-Rate Monitoring</h1>
-          <p className="mt-1 text-xs text-muted">
-            Behavioral anomaly detection with an exponentially weighted moving average (EWMA), catching redirection attacks.
+          <h1 className="mt-1 text-2xl font-bold tracking-tight">Anomaly &amp; burn-rate monitoring</h1>
+          <p className="mt-1 max-w-3xl text-xs text-muted">
+            Behavioural signals the policy engine computes on every payment. Each one does what its policy action
+            says: <code className="font-mono">alert</code> only marks the call, <code className="font-mono">hold</code> and{" "}
+            <code className="font-mono">block</code> stop it.
           </p>
         </div>
 
@@ -89,13 +97,14 @@ export default async function AnomaliesPage(props: AnomaliesPageProps) {
         <div className="rounded-xs border border-border bg-surface p-5">
           <div className="flex items-center justify-between">
             <span className="font-mono text-xs font-bold text-signal">Signal 1</span>
-            <span className="rounded-xs bg-signal/10 px-2 py-0.5 font-mono text-[10px] text-signal">
+            <span className="rounded-xs bg-signal/10 px-2 py-0.5 font-mono text-[11px] text-signal">
               z-threshold: {zThreshold ?? "varies by agent"}
             </span>
           </div>
-          <h3 className="mt-2 font-semibold text-sm">Burn Rate</h3>
+          <h2 className="mt-2 font-semibold text-sm">Burn Rate</h2>
           <p className="mt-1 text-xs text-muted">
-            USDC spent per unit of time. Catches prompt-injection and sudden-loop attacks (Scenario A) instantly.
+            USDC spent per minute, against an exponentially weighted baseline. Flags a sudden loop or a redirect
+            (Scenario A) once the warm-up below is over.
           </p>
           <div className="mt-4 rounded-xs bg-surface-2 p-2 font-mono text-[11px] text-muted">
             z = (x_t - &mu;_(t-1)) / &sigma;_(t-1)
@@ -105,11 +114,11 @@ export default async function AnomaliesPage(props: AnomaliesPageProps) {
         <div className="rounded-xs border border-border bg-surface p-5">
           <div className="flex items-center justify-between">
             <span className="font-mono text-xs font-bold text-held">Signal 2</span>
-            <span className="rounded-xs bg-held/10 px-2 py-0.5 font-mono text-[10px] text-held">
+            <span className="rounded-xs bg-held/10 px-2 py-0.5 font-mono text-[11px] text-held">
               max: {maxNewPerHour ?? "varies by agent"} / hour
             </span>
           </div>
-          <h3 className="mt-2 font-semibold text-sm">New Counterparty Rate</h3>
+          <h2 className="mt-2 font-semibold text-sm">New Counterparty Rate</h2>
           <p className="mt-1 text-xs text-muted">
             Number of addresses and domains first seen per hour. Catches attempts to redirect the agent to unknown addresses.
           </p>
@@ -121,7 +130,7 @@ export default async function AnomaliesPage(props: AnomaliesPageProps) {
         <div className="rounded-xs border border-border bg-surface p-5">
           <div className="flex items-center justify-between">
             <span className="font-mono text-xs font-bold text-critical">Signal 3</span>
-            <span className="rounded-xs bg-critical/10 px-2 py-0.5 font-mono text-[10px] text-critical">
+            <span className="rounded-xs bg-critical/10 px-2 py-0.5 font-mono text-[11px] text-critical">
               {entropy
                 ? `max drop: ${Math.round(entropy.maxDrop * 100)}% / ${entropy.windowMinutes}m`
                 : policy
@@ -129,10 +138,10 @@ export default async function AnomaliesPage(props: AnomaliesPageProps) {
                   : "varies by agent"}
             </span>
           </div>
-          <h3 className="mt-2 font-semibold text-sm">Counterparty Entropy</h3>
+          <h2 className="mt-2 font-semibold text-sm">Counterparty Entropy</h2>
           <p className="mt-1 text-xs text-muted">
-            How spread out the agent&apos;s calls are across counterparties. A sudden collapse onto one
-            address — a redirect that stays under every per-call limit — shows up as an entropy drop.
+            How spread out the agent&rsquo;s calls are across counterparties. A sudden collapse onto one
+            address (a redirect that stays under every per-call limit) shows up as an entropy drop.
           </p>
           <div className="mt-4 rounded-xs bg-surface-2 p-2 font-mono text-[11px] text-muted">
             H = -&Sigma; p_i log2 p_i ; (H&#772; - H) / H&#772; &gt; {entropy ? entropy.maxDrop : "max_drop"} &rarr;{" "}
@@ -145,9 +154,9 @@ export default async function AnomaliesPage(props: AnomaliesPageProps) {
       <div className="rounded-md border border-border bg-surface p-6">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h3 className="text-sm font-semibold">Cold Start &amp; Warmup Window</h3>
+            <h2 className="text-sm font-semibold">Cold start &amp; warm-up window</h2>
             <p className="mt-0.5 text-xs text-muted">
-              A warmup mechanism that prevents false alarms on first run, when there&apos;s no history yet.
+              A warmup mechanism that prevents false alarms on first run, when there&rsquo;s no history yet.
             </p>
           </div>
           {coldStart === null ? (
@@ -156,13 +165,14 @@ export default async function AnomaliesPage(props: AnomaliesPageProps) {
             </div>
           ) : coldStart ? (
             <div className="flex items-center gap-2 rounded-xs border border-held/20 bg-held/10 px-3 py-1 font-mono text-xs text-held">
-              <span className="h-1.5 w-1.5 rounded-full bg-held" />
-              Warming Up ({activity?.totalCount ?? 0}/200 calls &middot; {Math.floor(minutesSinceFirst)}/30 min — anomaly rules log only, don&apos;t block yet)
+              <span className="h-1.5 w-1.5 rounded-full bg-held" aria-hidden="true" />
+              Warming up: {callsDone}/200 calls{callsDone >= 200 ? " (done)" : ""} · {minutesDone}/30 min
+              {minutesDone >= 30 ? " (done)" : ""}. Anomaly rules only log until both are met
             </div>
           ) : (
             <div className="flex items-center gap-2 rounded-xs border border-signal/20 bg-signal/10 px-3 py-1 font-mono text-xs text-signal">
-              <span className="h-1.5 w-1.5 rounded-full bg-signal" />
-              Warmup Complete (Active Protection)
+              <span className="h-1.5 w-1.5 rounded-full bg-signal" aria-hidden="true" />
+              Warm-up complete: anomaly rules act as configured
             </div>
           )}
         </div>
@@ -172,7 +182,7 @@ export default async function AnomaliesPage(props: AnomaliesPageProps) {
             <span className="text-muted block">Warmup Threshold 1:</span>
             <span className="font-bold text-fg">First 200 Authorizations</span>
             <p className="text-[11px] text-muted mt-1 font-sans">
-              Until the agent reaches 200 calls, anomaly rules only log — they don&apos;t block.
+              Until the agent reaches 200 calls, anomaly rules only log. They don&rsquo;t block.
             </p>
           </div>
           <div className="rounded-xs bg-surface-2 p-3">
@@ -188,9 +198,9 @@ export default async function AnomaliesPage(props: AnomaliesPageProps) {
       {/* Incident Detections Table */}
       <div className="rounded-md border border-border bg-surface p-6">
         <div className="border-b border-border pb-4">
-          <h3 className="text-sm font-semibold">Detected Anomalies &amp; Blocked Security Events</h3>
+          <h2 className="text-sm font-semibold">Calls a rule acted on</h2>
           <p className="mt-0.5 text-xs text-muted">
-            Every call a policy or anomaly rule acted on — blocked, held, or
+            Every call a policy or anomaly rule acted on: blocked, held, or
             flagged with an alert-only signal.
           </p>
         </div>

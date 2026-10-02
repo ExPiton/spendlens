@@ -3,6 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { authClient } from "@/lib/auth/client";
+import { Button } from "@/components/ui/Button";
 import { Field, FormError, FormNotice } from "./ui";
 
 export function ForgotPasswordForm() {
@@ -43,21 +44,20 @@ export function ForgotPasswordForm() {
       <FormError>{error}</FormError>
       <Field
         label="Email"
+        name="email"
         type="email"
         autoComplete="email"
+        autoCapitalize="none"
+        spellCheck={false}
         required
         value={email}
         onChange={(e) => setEmail(e.target.value)}
       />
-      <button
-        type="submit"
-        disabled={pending}
-        className="w-full rounded-sm bg-fg px-4 py-2.5 text-sm font-medium text-bg transition-slens hover:opacity-85 disabled:opacity-50"
-      >
+      <Button type="submit" disabled={pending} className="w-full">
         {pending ? "Sending…" : "Send reset link"}
-      </button>
+      </Button>
       <p className="text-center text-xs text-muted">
-        <Link href="/login" className="underline hover:text-fg">
+        <Link href="/login" className="underline transition-slens hover:text-fg">
           Back to sign in
         </Link>
       </p>

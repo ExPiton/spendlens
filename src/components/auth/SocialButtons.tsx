@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { authClient } from "@/lib/auth/client";
+import { Button } from "@/components/ui/Button";
 
 type Provider = "github" | "google";
 
@@ -41,9 +42,10 @@ export function SocialButtons({
   return (
     <div className="space-y-2">
       {providers.map((provider) => (
-        <button
+        <Button
           key={provider}
           type="button"
+          variant="secondary"
           disabled={busy !== null}
           onClick={async () => {
             setBusy(provider);
@@ -53,11 +55,11 @@ export function SocialButtons({
               errorCallbackURL: "/login?error=oauth",
             });
           }}
-          className="flex w-full items-center justify-center gap-2.5 rounded-sm border border-border bg-surface px-4 py-2 text-sm font-medium text-fg transition-slens hover:bg-surface-2 disabled:opacity-50"
+          className="w-full bg-surface"
         >
           <ProviderIcon provider={provider} />
           {busy === provider ? "Redirecting…" : LABELS[provider]}
-        </button>
+        </Button>
       ))}
     </div>
   );

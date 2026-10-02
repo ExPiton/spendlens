@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { authClient } from "@/lib/auth/client";
+import { Button } from "@/components/ui/Button";
 import { Field, FormError } from "./ui";
 
 export function SignupForm() {
@@ -49,6 +50,7 @@ export function SignupForm() {
       <FormError>{error}</FormError>
       <Field
         label="Name"
+        name="name"
         autoComplete="name"
         value={name}
         onChange={(e) => setName(e.target.value)}
@@ -56,29 +58,29 @@ export function SignupForm() {
       />
       <Field
         label="Email"
+        name="email"
         type="email"
         autoComplete="email"
+        autoCapitalize="none"
+        spellCheck={false}
         required
         value={email}
         onChange={(e) => setEmail(e.target.value)}
       />
       <Field
         label="Password"
+        name="password"
         type="password"
         autoComplete="new-password"
         required
         minLength={8}
         value={password}
         onChange={(e) => setPassword(e.target.value)}
-        hint={<span className="font-normal text-muted/70">8+ characters</span>}
+        hint={<span className="font-normal">8+ characters</span>}
       />
-      <button
-        type="submit"
-        disabled={pending}
-        className="w-full rounded-sm bg-fg px-4 py-2.5 text-sm font-medium text-bg transition-slens hover:opacity-85 disabled:opacity-50"
-      >
+      <Button type="submit" disabled={pending} className="w-full">
         {pending ? "Creating account…" : "Create account"}
-      </button>
+      </Button>
     </form>
   );
 }

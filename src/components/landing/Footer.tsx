@@ -1,10 +1,12 @@
+import Link from "next/link";
 import { Logo } from "@/components/brand/Logo";
 
-const OUT_OF_SCOPE = [
-  "Holding or managing private keys",
-  "Custody of user funds",
-  "Payment facilitation or fund transfer",
-  "Wallet generation",
+/** What the service never does — worded for the hosted product: the SDK may
+ *  run a signer inside YOUR agent, but no key ever reaches Spendlens. */
+const NEVER = [
+  "Hold your agents' private keys",
+  "Take custody of your funds",
+  "Move money on your behalf",
 ];
 
 export function Footer() {
@@ -15,20 +17,18 @@ export function Footer() {
           <div>
             <Logo size={24} />
             <p className="mt-4 max-w-sm text-sm text-muted">
-              An oversight and observability layer for AI agent spend on
-              Arc. A complement to Circle&rsquo;s payment rail — not a
-              competitor.
+              Spend controls and an audit trail for AI agents that pay on Arc.
+              Built to work alongside Circle&rsquo;s payment rail, not to
+              replace it.
             </p>
           </div>
 
           <div>
-            <p className="text-xs font-medium tracking-wide text-muted uppercase">
-              Out of scope — deliberately never done
-            </p>
+            <p className="text-sm font-medium">What Spendlens never does</p>
             <ul className="mt-3 space-y-2 text-sm text-muted">
-              {OUT_OF_SCOPE.map((item) => (
+              {NEVER.map((item) => (
                 <li key={item} className="flex gap-2">
-                  <span className="text-critical" aria-hidden="true">
+                  <span className="text-fg" aria-hidden="true">
                     ×
                   </span>
                   {item}
@@ -40,7 +40,14 @@ export function Footer() {
 
         <div className="mt-14 flex flex-col gap-3 border-t border-border pt-6 text-xs text-muted sm:flex-row sm:items-center sm:justify-between">
           <span>© 2026 Spendlens</span>
-          <span>Dashboard: Next.js · Chain access: Arc (EVM-compatible)</span>
+          <nav aria-label="Account" className="flex gap-3">
+            <Link href="/login" className="rounded-sm px-2 py-1.5 transition-slens hover:text-fg">
+              Sign in
+            </Link>
+            <Link href="/signup" className="rounded-sm px-2 py-1.5 transition-slens hover:text-fg">
+              Get started free
+            </Link>
+          </nav>
         </div>
       </div>
     </footer>

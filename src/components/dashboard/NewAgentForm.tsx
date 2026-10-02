@@ -2,6 +2,7 @@
 
 import { useActionState, useState } from "react";
 import { createAgentAction, type ActionState } from "@/app/dashboard/actions";
+import { Button } from "@/components/ui/Button";
 
 const initial: ActionState = {};
 
@@ -12,45 +13,54 @@ export function NewAgentForm() {
   return (
     <form action={formAction} className="space-y-4">
       {state.error && (
-        <p className="rounded-sm border border-critical/30 bg-critical/10 px-3 py-2 text-xs text-critical">
+        <p role="alert" className="rounded-sm border border-critical/30 bg-critical/10 px-3 py-2 text-xs text-critical">
           {state.error}
         </p>
       )}
 
-      <label className="block">
-        <span className="mb-1.5 block text-xs font-medium text-muted">Agent id</span>
+      <div>
+        <label htmlFor="agent-slug" className="mb-1.5 block text-xs font-medium text-muted">
+          Agent id
+        </label>
         <input
+          id="agent-slug"
           name="slug"
           required
+          minLength={3}
+          maxLength={50}
           value={slug}
           onChange={(e) => setSlug(e.target.value)}
           placeholder="research-crawler-01"
-          pattern="[a-zA-Z0-9][a-zA-Z0-9-]*"
-          className="w-full rounded-sm border border-border bg-surface px-3 py-2 font-mono text-sm text-fg outline-none focus:border-signal"
+          // `\-`: browsers compile `pattern` with the `v` flag, where a bare trailing `-` in a
+          // class is a syntax error, so the unescaped pattern was ignored (and logged an error).
+          pattern="[a-zA-Z0-9][a-zA-Z0-9\-]*"
+          autoComplete="off"
+          autoCapitalize="none"
+          spellCheck={false}
+          aria-describedby="agent-slug-hint"
+          className="field w-full rounded-sm bg-surface px-3 py-2 font-mono text-sm text-fg"
         />
-        <span className="mt-1 block text-[11px] text-muted">
+        <p id="agent-slug-hint" className="mt-1 text-[11px] text-muted">
           Lowercase letters, numbers and hyphens. 3–50 characters.
-        </span>
-      </label>
+        </p>
+      </div>
 
-      <label className="block">
-        <span className="mb-1.5 block text-xs font-medium text-muted">
+      <div>
+        <label htmlFor="agent-label" className="mb-1.5 block text-xs font-medium text-muted">
           Display name
-        </span>
+        </label>
         <input
+          id="agent-label"
           name="label"
           placeholder="Research crawler"
-          className="w-full rounded-sm border border-border bg-surface px-3 py-2 text-sm text-fg outline-none focus:border-signal"
+          autoComplete="off"
+          className="field w-full rounded-sm bg-surface px-3 py-2 text-sm text-fg"
         />
-      </label>
+      </div>
 
-      <button
-        type="submit"
-        disabled={pending}
-        className="w-full rounded-sm bg-fg px-4 py-2.5 text-sm font-medium text-bg transition-slens hover:opacity-85 disabled:opacity-50"
-      >
+      <Button type="submit" disabled={pending} className="w-full">
         {pending ? "Creating…" : "Create agent"}
-      </button>
+      </Button>
     </form>
   );
 }

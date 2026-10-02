@@ -1,9 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { authClient } from "@/lib/auth/client";
+import { Button, LinkButton } from "@/components/ui/Button";
 import { Field, FormError } from "./ui";
 
 export function ResetPasswordForm() {
@@ -23,12 +23,9 @@ export function ResetPasswordForm() {
         <FormError>
           This reset link is invalid or has expired. Request a fresh one.
         </FormError>
-        <Link
-          href="/forgot-password"
-          className="block w-full rounded-sm bg-fg px-4 py-2.5 text-center text-sm font-medium text-bg transition-slens hover:opacity-85"
-        >
+        <LinkButton href="/forgot-password" className="w-full">
           Request new link
-        </Link>
+        </LinkButton>
       </div>
     );
   }
@@ -61,15 +58,18 @@ export function ResetPasswordForm() {
       <FormError>{error}</FormError>
       <Field
         label="New password"
+        name="new-password"
         type="password"
         autoComplete="new-password"
         required
         minLength={8}
         value={password}
         onChange={(e) => setPassword(e.target.value)}
+        hint={<span className="font-normal">8+ characters</span>}
       />
       <Field
         label="Confirm new password"
+        name="confirm-password"
         type="password"
         autoComplete="new-password"
         required
@@ -77,13 +77,9 @@ export function ResetPasswordForm() {
         value={confirm}
         onChange={(e) => setConfirm(e.target.value)}
       />
-      <button
-        type="submit"
-        disabled={pending}
-        className="w-full rounded-sm bg-fg px-4 py-2.5 text-sm font-medium text-bg transition-slens hover:opacity-85 disabled:opacity-50"
-      >
+      <Button type="submit" disabled={pending} className="w-full">
         {pending ? "Saving…" : "Set new password"}
-      </button>
+      </Button>
     </form>
   );
 }

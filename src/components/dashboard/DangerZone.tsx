@@ -4,12 +4,15 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { authClient } from "@/lib/auth/client";
 import { clearDataAction, seedDemoDataAction } from "@/app/dashboard/actions";
+import { Button } from "@/components/ui/Button";
 
 export function DangerZone() {
   const router = useRouter();
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmClear, setConfirmClear] = useState(false);
   const [password, setPassword] = useState("");
   const [err, setErr] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   return (
     <div className="space-y-4">
@@ -21,21 +24,34 @@ export function DangerZone() {
         </p>
         <div className="mt-3 flex flex-wrap gap-2">
           <form action={seedDemoDataAction}>
-            <button
-              type="submit"
-              className="rounded-sm border border-border px-3 py-1.5 text-xs font-medium text-fg hover:bg-surface-2"
-            >
+            <Button type="submit" variant="secondary" size="sm">
               Load / refresh sample data
-            </button>
+            </Button>
           </form>
-          <form action={clearDataAction}>
+          {!confirmClear ? (
             <button
-              type="submit"
-              className="rounded-sm border border-border px-3 py-1.5 text-xs font-medium text-muted hover:border-critical hover:text-critical"
+              type="button"
+              onClick={() => setConfirmClear(true)}
+              className="rounded-sm border border-border px-3 py-1.5 text-xs font-medium text-muted transition-slens hover:border-critical hover:text-critical active:scale-[0.98]"
             >
               Clear all my agents &amp; data
             </button>
-          </form>
+          ) : (
+            // One click used to wipe every agent, key, policy and ledger row —
+            // right next to "Load sample data", with no confirmation.
+            <form action={clearDataAction} className="flex flex-wrap items-center gap-2 rounded-sm border border-critical/40 bg-critical/5 px-3 py-2">
+              <span role="alert" className="text-xs text-critical">
+                Delete every agent, API key, policy and ledger row? This cannot be undone.
+              </span>
+              <Button type="submit" variant="danger" size="sm">
+                Yes, delete everything
+              </Button>
+              {/* Focus lands on the safe choice: the button this replaced is gone. */}
+              <Button type="button" variant="secondary" size="sm" autoFocus onClick={() => setConfirmClear(false)}>
+                Cancel
+              </Button>
+            </form>
+          )}
         </div>
       </div>
 
@@ -49,7 +65,7 @@ export function DangerZone() {
           <button
             type="button"
             onClick={() => setConfirmDelete(true)}
-            className="mt-3 rounded-sm border border-critical px-3 py-1.5 text-xs font-semibold text-critical hover:bg-critical hover:text-paper"
+            className="mt-3 rounded-sm border border-critical px-3 py-1.5 text-xs font-semibold text-critical transition-slens hover:bg-critical hover:text-on-critical active:scale-[0.98]"
           >
             Delete my account
           </button>
@@ -59,9 +75,11 @@ export function DangerZone() {
             onSubmit={async (e) => {
               e.preventDefault();
               setErr(null);
+              setDeleting(true);
               const { error } = await authClient.deleteUser({ password });
               if (error) {
                 setErr(error.message || "Could not delete account.");
+                setDeleting(false);
                 return;
               }
               router.push("/");
@@ -70,27 +88,28 @@ export function DangerZone() {
           >
             <input
               type="password"
+              name="password"
+              aria-label="Your password, to confirm deleting the account"
               placeholder="Confirm with your password"
+              autoComplete="current-password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
-              className="w-full rounded-sm border border-border bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-critical"
+              autoFocus
+              className="field w-full rounded-sm bg-bg px-3 py-2 text-sm text-fg"
             />
-            {err && <p className="text-xs text-critical">{err}</p>}
+            {err && (
+              <p role="alert" className="text-xs text-critical">
+                {err}
+              </p>
+            )}
             <div className="flex gap-2">
-              <button
-                type="submit"
-                className="rounded-sm bg-critical px-3 py-1.5 text-xs font-semibold text-paper"
-              >
-                Permanently delete
-              </button>
-              <button
-                type="button"
-                onClick={() => setConfirmDelete(false)}
-                className="rounded-sm border border-border px-3 py-1.5 text-xs text-muted"
-              >
+              <Button type="submit" variant="danger" size="sm" disabled={deleting}>
+                {deleting ? "Deleting…" : "Permanently delete"}
+              </Button>
+              <Button type="button" variant="secondary" size="sm" onClick={() => setConfirmDelete(false)}>
                 Cancel
-              </button>
+              </Button>
             </div>
           </form>
         )}

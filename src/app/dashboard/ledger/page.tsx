@@ -10,6 +10,8 @@ import { listDigests } from "@/lib/digest";
 import { LedgerIntegrity } from "@/components/dashboard/LedgerIntegrity";
 import { ARC } from "@/lib/arc";
 
+export const metadata = { title: "Ledger" };
+
 interface LedgerPageProps {
   searchParams: Promise<{
     agentId?: string;
@@ -27,7 +29,8 @@ export default async function LedgerPage(props: LedgerPageProps) {
   const decision = searchParams.decision || undefined;
   const quality = searchParams.quality || undefined;
   const search = searchParams.search || undefined;
-  const page = parseInt(searchParams.page || "1", 10);
+  // `?page=abc` parsed to NaN and went straight into the query's OFFSET.
+  const page = Math.max(1, Number.parseInt(searchParams.page || "1", 10) || 1);
   const pageSize = 30;
 
   const [options, data, digests] = await Promise.all([
@@ -79,11 +82,12 @@ export default async function LedgerPage(props: LedgerPageProps) {
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between border-b border-border pb-6">
         <div>
           <span className="text-xs text-muted uppercase tracking-wider font-semibold">
-            Append-Only Event Ledger
+            Ledger
           </span>
-          <h1 className="mt-1 text-2xl font-bold tracking-tight">Event Ledger &amp; Telemetry Records</h1>
-          <p className="mt-1 text-xs text-muted">
-            Every authorization and denial is recorded immutably. Bodies are never stored — only a SHA-256 digest is kept.
+          <h1 className="mt-1 text-2xl font-bold tracking-tight">Every payment decision</h1>
+          <p className="mt-1 max-w-3xl text-xs text-muted">
+            Allowed, held and blocked calls, append-only. Response bodies are never stored, only their size and a
+            SHA-256 digest. Times are UTC.
           </p>
         </div>
 
@@ -93,9 +97,9 @@ export default async function LedgerPage(props: LedgerPageProps) {
       {/* Filter Toolbar */}
       <div className="flex flex-wrap items-center gap-3 rounded-xs border border-border bg-surface p-4 text-xs">
         {/* Decision Filter */}
-        <div className="flex items-center gap-2">
-          <span className="text-muted">Decision:</span>
-          <div className="flex gap-1">
+        <div role="group" aria-labelledby="filter-decision" className="flex flex-wrap items-center gap-2">
+          <span id="filter-decision" className="text-muted">Decision:</span>
+          <div className="flex flex-wrap gap-1">
             {[
               { id: undefined, label: "All" },
               { id: "allow", label: "Allow" },
@@ -108,7 +112,8 @@ export default async function LedgerPage(props: LedgerPageProps) {
                 <Link
                   key={item.label}
                   href={createFilterUrl({ decision: item.id, page: "1" })}
-                  className={`rounded-xs px-2 py-1 transition-slens ${
+                  aria-current={active ? "true" : undefined}
+                  className={`rounded-xs px-2 py-1.5 transition-slens ${
                     active
                       ? "bg-fg text-bg font-semibold"
                       : "bg-surface-2 text-muted hover:text-fg"
@@ -122,14 +127,16 @@ export default async function LedgerPage(props: LedgerPageProps) {
         </div>
 
         {/* Quality Filter */}
-        <div className="flex items-center gap-2 sm:ml-4">
-          <span className="text-muted">Quality:</span>
-          <div className="flex gap-1">
+        <div role="group" aria-labelledby="filter-quality" className="flex flex-wrap items-center gap-2 sm:ml-4">
+          <span id="filter-quality" className="text-muted">Quality:</span>
+          <div className="flex flex-wrap gap-1">
             {[
               { id: undefined, label: "All" },
               { id: "ok", label: "OK" },
               { id: "empty", label: "Empty" },
               { id: "http_error", label: "Error" },
+              { id: "schema_fail", label: "Schema" },
+              { id: "timeout", label: "Timeout" },
               { id: "slow", label: "Slow" },
             ].map((item) => {
               const active = quality === item.id || (!quality && item.id === undefined);
@@ -137,7 +144,8 @@ export default async function LedgerPage(props: LedgerPageProps) {
                 <Link
                   key={item.label}
                   href={createFilterUrl({ quality: item.id, page: "1" })}
-                  className={`rounded-xs px-2 py-1 transition-slens ${
+                  aria-current={active ? "true" : undefined}
+                  className={`rounded-xs px-2 py-1.5 transition-slens ${
                     active
                       ? "bg-fg text-bg font-semibold"
                       : "bg-surface-2 text-muted hover:text-fg"
@@ -152,8 +160,8 @@ export default async function LedgerPage(props: LedgerPageProps) {
 
         <LedgerSearchBox initialValue={search ?? ""} />
 
-        <div className="ml-auto text-muted font-mono">
-          Found <span className="text-fg font-semibold">{data.total}</span> records total
+        <div className="ml-auto text-muted font-mono" aria-live="polite">
+          <span className="text-fg font-semibold">{data.total}</span> {data.total === 1 ? "record" : "records"}
         </div>
       </div>
 
@@ -171,17 +179,17 @@ export default async function LedgerPage(props: LedgerPageProps) {
               {page > 1 && (
                 <Link
                   href={createFilterUrl({ page: String(page - 1) })}
-                  className="rounded-xs border border-border px-3 py-1 text-muted hover:border-fg hover:text-fg"
+                  className="rounded-xs border border-border px-3 py-1.5 text-muted transition-slens hover:border-fg hover:text-fg"
                 >
-                  ← Previous
+                  <span aria-hidden="true">← </span>Previous
                 </Link>
               )}
               {page < totalPages && (
                 <Link
                   href={createFilterUrl({ page: String(page + 1) })}
-                  className="rounded-xs border border-border px-3 py-1 text-muted hover:border-fg hover:text-fg"
+                  className="rounded-xs border border-border px-3 py-1.5 text-muted transition-slens hover:border-fg hover:text-fg"
                 >
-                  Next →
+                  Next<span aria-hidden="true"> →</span>
                 </Link>
               )}
             </div>

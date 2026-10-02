@@ -7,6 +7,8 @@ import { Table, Thead, Tbody, Tr, Th, Td } from "@/components/ui/Table";
 import { MonoNumber } from "@/components/ui/MonoNumber";
 import { formatUsdcPrecise, formatPercent, formatCount, formatDateTime, formatCounterparty } from "@/lib/format";
 
+export const metadata = { title: "Counterparties" };
+
 interface CounterpartiesPageProps {
   searchParams: Promise<{ agentId?: string }>;
 }
@@ -38,11 +40,11 @@ export default async function CounterpartiesPage(props: CounterpartiesPageProps)
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between border-b border-border pb-6">
         <div>
           <span className="text-xs text-muted uppercase tracking-wider font-semibold">
-            Quality &amp; Reputation Network
+            Counterparties
           </span>
-          <h1 className="mt-1 text-2xl font-bold tracking-tight">Counterparties &amp; Service Quality Scores</h1>
+          <h1 className="mt-1 text-2xl font-bold tracking-tight">Who your agents pay</h1>
           <p className="mt-1 text-xs text-muted">
-            Response quality, failure rates, and total volume for every API provider and smart contract paid.
+            Spend, call volume and response quality for every address and API your agents paid, from your own ledger.
           </p>
         </div>
 
@@ -51,17 +53,24 @@ export default async function CounterpartiesPage(props: CounterpartiesPageProps)
 
       {/* Main Table */}
       <div className="rounded-md border border-border bg-surface p-6">
-        <div className="overflow-x-auto">
+        {/* `relative`: the last header cell holds an `sr-only` (absolutely
+            positioned) label, and an absolute box escapes an `overflow` clip
+            unless the clipping element is its containing block. Without it
+            that label sat at the table's far right and made the whole page
+            956px wide on a 390px phone. */}
+        <div className="relative overflow-x-auto">
           <Table>
             <Thead>
               <Tr>
-                <Th>Counterparty (Domain / Address)</Th>
-                <Th align="right">Total Spend</Th>
-                <Th align="right">Call Count</Th>
-                <Th align="right">Quality Score</Th>
+                <Th>Counterparty</Th>
+                <Th align="right">Spend (USDC)</Th>
+                <Th align="right">Calls</Th>
+                <Th align="right">Good responses</Th>
                 <Th align="right">Allow / Block / Hold</Th>
-                <Th>First Seen</Th>
-                <Th align="right">Action</Th>
+                <Th>First seen (UTC)</Th>
+                <Th align="right">
+                  <span className="sr-only">Records</span>
+                </Th>
               </Tr>
             </Thead>
             <Tbody>
@@ -75,7 +84,7 @@ export default async function CounterpartiesPage(props: CounterpartiesPageProps)
                       {formatCounterparty(cp.counterparty)}
                     </Td>
                     <Td align="right">
-                      <MonoNumber className="font-semibold">{formatUsdcPrecise(cp.totalSpendMicroUsdc)} USDC</MonoNumber>
+                      <MonoNumber className="font-semibold">{formatUsdcPrecise(cp.totalSpendMicroUsdc)}</MonoNumber>
                     </Td>
                     <Td align="right">
                       <MonoNumber>{formatCount(cp.callCount)}</MonoNumber>
@@ -100,15 +109,15 @@ export default async function CounterpartiesPage(props: CounterpartiesPageProps)
                         <span className="text-held">{formatCount(cp.holdCount)}</span>
                       </MonoNumber>
                     </Td>
-                    <Td className="text-muted text-xs font-mono">
+                    <Td className="whitespace-nowrap text-muted text-xs font-mono">
                       {formatDateTime(cp.firstSeenTs)}
                     </Td>
                     <Td align="right">
                       <Link
                         href={`/dashboard/ledger?counterparty=${encodeURIComponent(cp.counterparty)}`}
-                        className="rounded-xs border border-border px-2.5 py-1 text-xs text-muted transition-slens hover:border-fg hover:text-fg"
+                        className="whitespace-nowrap rounded-xs border border-border px-2.5 py-1 text-xs text-muted transition-slens hover:border-fg hover:text-fg"
                       >
-                        View Records →
+                        Records →
                       </Link>
                     </Td>
                   </Tr>

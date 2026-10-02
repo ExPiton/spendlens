@@ -23,6 +23,11 @@ interface AgentDetailPageProps {
   params: Promise<{ agentId: string }>;
 }
 
+export async function generateMetadata(props: AgentDetailPageProps) {
+  const { agentId } = await props.params;
+  return { title: agentId };
+}
+
 export default async function AgentDetailPage(props: AgentDetailPageProps) {
   const { user } = await requireVerifiedUser();
   const { agentId: slug } = await props.params;
@@ -55,19 +60,19 @@ export default async function AgentDetailPage(props: AgentDetailPageProps) {
       <div className="flex flex-col gap-4 border-b border-border pb-6 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <div className="flex items-center gap-2 text-xs text-muted">
-            <Link href="/dashboard/agents" className="hover:text-fg">
-              ← Agent Fleet
+            <Link href="/dashboard/agents" className="transition-slens hover:text-fg">
+              <span aria-hidden="true">← </span>Agents
             </Link>
-            <span>•</span>
+            <span aria-hidden="true">•</span>
             <span className="font-mono">{agent.agentId}</span>
             <span
-              className={`rounded-xs px-1.5 py-0.5 font-mono text-[10px] ${
+              className={`rounded-xs px-1.5 py-0.5 font-mono text-[11px] ${
                 record.status === "paused"
                   ? "bg-critical/15 text-critical"
                   : "bg-signal/15 text-signal"
               }`}
             >
-              {record.status === "paused" ? "PAUSED" : "ACTIVE"}
+              {record.status === "paused" ? "HALTED" : "ACTIVE"}
             </span>
           </div>
           <h1 className="mt-1 text-2xl font-bold tracking-tight sm:text-3xl">
@@ -75,7 +80,7 @@ export default async function AgentDetailPage(props: AgentDetailPageProps) {
           </h1>
           <p className="mt-0.5 font-mono text-xs text-muted">
             Last activity:{" "}
-            {agent.lastActivityTs ? formatDateTime(agent.lastActivityTs) : "—"}
+            {agent.lastActivityTs ? `${formatDateTime(agent.lastActivityTs)} UTC` : "none yet"}
           </p>
         </div>
 
@@ -95,21 +100,21 @@ export default async function AgentDetailPage(props: AgentDetailPageProps) {
           sublabel="USDC"
         />
         <StatCard
-          label="Unmatched Spend"
+          label="Wasted"
           value={formatUsdcTotal(agent.wastedMicroUsdc)}
-          sublabel={formatPercent(agent.wastedRatio)}
-          tone={agent.wastedRatio > 0.15 ? "critical" : "signal"}
+          sublabel={`${formatPercent(agent.wastedRatio)} of spend`}
+          tone={agent.wastedRatio > 0.15 ? "critical" : agent.wastedRatio > 0.05 ? "held" : "signal"}
         />
         <StatCard
-          label="Blocked Calls"
+          label="Blocked"
           value={formatCount(agent.blockedCount)}
-          sublabel={`${formatCount(agent.allowedCount)} successful calls`}
+          sublabel={`${formatCount(agent.allowedCount)} paid calls`}
           tone={agent.blockedCount > 0 ? "critical" : "neutral"}
         />
         <StatCard
-          label="Counterparties Reached"
+          label="Counterparties"
           value={formatCount(agent.counterpartyCount)}
-          sublabel="Distinct APIs & contracts"
+          sublabel="distinct addresses & APIs paid"
         />
       </div>
 
@@ -145,9 +150,11 @@ export default async function AgentDetailPage(props: AgentDetailPageProps) {
       {policy && (
         <div className="rounded-md border border-border bg-surface p-6">
           <div className="flex items-center justify-between border-b border-border pb-3">
-            <h3 className="text-sm font-semibold">Active Policy Limits</h3>
+            <h2 className="text-sm font-semibold">Active policy limits</h2>
             <div className="flex items-center gap-3">
-              <span className="font-mono text-xs text-muted">v{policy.version}</span>
+              <span className="font-mono text-xs text-muted" title="Bumped on every save">
+                revision {policy.version}
+              </span>
               <Link
                 href={`/dashboard/policies?agentId=${agent.agentId}`}
                 className="rounded-xs border border-border px-2.5 py-1 text-xs text-muted transition-slens hover:border-fg hover:text-fg"
@@ -192,7 +199,7 @@ export default async function AgentDetailPage(props: AgentDetailPageProps) {
       {/* Recent decisions */}
       <div className="rounded-md border border-border bg-surface p-6">
         <div className="border-b border-border pb-4">
-          <h3 className="text-sm font-semibold">Recent Decisions &amp; Telemetry</h3>
+          <h2 className="text-sm font-semibold">Recent decisions</h2>
           <p className="mt-0.5 text-xs text-muted">
             The most recent calls made by {agent.label}.
           </p>

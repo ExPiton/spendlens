@@ -2,6 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { useRouter, useSearchParams, usePathname } from "next/navigation";
+import { Button } from "@/components/ui/Button";
 
 /** The ledger's search filter (resource / counterparty / agent / ruleHit —
  *  see `AuthorizationFilters.search`) was already fully wired end to end in
@@ -24,27 +25,32 @@ export function LedgerSearchBox({ initialValue }: { initialValue: string }) {
   }
 
   return (
-    <div className="flex items-center gap-2 sm:ml-4">
-      <span className="text-muted">Search:</span>
+    <form
+      role="search"
+      onSubmit={(e) => {
+        e.preventDefault();
+        submit();
+      }}
+      className="flex w-full items-center gap-2 sm:ml-4 sm:w-auto"
+    >
+      <label htmlFor="ledger-search" className="shrink-0 text-muted">
+        Search:
+      </label>
       <input
-        type="text"
+        id="ledger-search"
+        name="search"
+        type="search"
         value={value}
         onChange={(e) => setValue(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") submit();
-        }}
         placeholder="resource, counterparty, agent, rule…"
+        autoComplete="off"
+        spellCheck={false}
         disabled={isPending}
-        className="w-52 rounded-xs border border-border bg-bg px-2 py-1 text-fg outline-none focus:border-signal disabled:opacity-50"
+        className="field min-w-0 flex-1 rounded-xs bg-bg px-2 py-1 text-fg sm:w-52 sm:flex-none"
       />
-      <button
-        type="button"
-        onClick={submit}
-        disabled={isPending}
-        className="rounded-xs bg-surface-2 px-2 py-1 text-muted transition-slens hover:text-fg disabled:opacity-50"
-      >
+      <Button type="submit" variant="secondary" size="sm" disabled={isPending}>
         {isPending ? "…" : "Go"}
-      </button>
-    </div>
+      </Button>
+    </form>
   );
 }

@@ -5,6 +5,8 @@ import { AgentSwitcher } from "@/components/dashboard/AgentSwitcher";
 import { PolicyViewer } from "@/components/dashboard/PolicyViewer";
 import { NoAgents } from "@/components/dashboard/EmptyState";
 
+export const metadata = { title: "Policies" };
+
 interface PoliciesPageProps {
   searchParams: Promise<{ agentId?: string }>;
 }
@@ -39,13 +41,14 @@ export default async function PoliciesPage(props: PoliciesPageProps) {
       <div className="flex flex-col gap-4 border-b border-border pb-6 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <span className="text-xs font-semibold uppercase tracking-wider text-muted">
-            Declarative Policy Engine
+            Policies
           </span>
           <h1 className="mt-1 text-2xl font-bold tracking-tight">
-            Policy File &amp; Rule Configuration
+            Rules for each payment
           </h1>
-          <p className="mt-1 text-xs text-muted">
-            Rules aren&apos;t hardcoded; they&apos;re stored per agent and versioned on every save.
+          <p className="mt-1 max-w-3xl text-xs text-muted">
+            One YAML policy per agent. Agents that follow the dashboard policy (no local{" "}
+            <code className="font-mono">policy</code> in their SDK setup) pick up a saved change within ~15 seconds.
           </p>
         </div>
 
