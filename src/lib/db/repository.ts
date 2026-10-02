@@ -359,10 +359,13 @@ export async function getOverviewStats(
     blockedCount: agg.blockedCount,
     blockedMicroUsdc,
     reconciliationStatus: worst,
+    // Total discrepancy: a chain-ahead (critical) and a ledger-ahead (pending)
+    // row must not cancel each other out to a reassuring "delta 0".
     reconciliationDeltaMicroUsdc: relevant.reduce(
-      (s, r) => s + r.deltaMicroUsdc,
+      (s, r) => s + Math.abs(r.deltaMicroUsdc),
       0,
     ),
+    reconciledRows: relevant.length,
   });
 }
 

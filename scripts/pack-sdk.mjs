@@ -20,15 +20,16 @@ const pkg = {
   name: "@spendlens/sdk",
   version,
   description: "Interception SDK for Spendlens — policy, ledger and quality analysis for AI-agent micropayments.",
-  type: "module",
+  // NOT "type": "module": tsup emits CommonJS as index.js and ESM as index.mjs
+  // (the classic dual package). With "type": "module" Node read index.js as
+  // ESM, so `require("@spendlens/sdk")` returned an empty object — no `guard`.
   main: "./index.js",
   module: "./index.mjs",
   types: "./index.d.ts",
   exports: {
     ".": {
-      types: "./index.d.ts",
-      import: "./index.mjs",
-      require: "./index.js",
+      import: { types: "./index.d.mts", default: "./index.mjs" },
+      require: { types: "./index.d.ts", default: "./index.js" },
     },
   },
   files: ["index.mjs", "index.js", "index.d.ts", "index.d.mts", "README.md", "LICENSE"],

@@ -10,6 +10,8 @@
  *
  *   -> kill switch, remote policy, human escalation, case-insensitive
  *      counterparties, per-agent reconciliation
+ *   -> regressions from the review: bare-origin sink, strict allowlist,
+ *      negative amounts, honest simulator, policy validation, paging
  *
  * Usage:  node scripts/e2e-test.mjs [http://127.0.0.1:3000]
  *
@@ -276,7 +278,101 @@ escalation: { webhook: "https://example.com/x", timeout_seconds: 30, on_timeout:
     `${mixed.json?.records?.length} rows`,
   );
 
-  // 12. auth
+  // 12. regressions from the review — each one was a real hole
+  const fakePaid = async (url, init) => {
+    if (String(url).includes("/api/sdk/config")) return fetch(url, init); // the control plane talks to the real server
+    const h = new Headers(init?.headers);
+    const q = new URL(url).searchParams;
+    if (!h.get("X-Payment-Authorization")) {
+      return new Response("pay", {
+        status: 402,
+        headers: { "x-pay-to": q.get("to") ?? "api.example.io", "x-pay-amount": q.get("amt") ?? "0.004", "x-pay-nonce": "n1", "x-pay-chain-id": "5042002" },
+      });
+    }
+    return new Response(JSON.stringify({ data: 1 }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const guarded = guard({
+    agentId: AGENT,
+    apiKey,
+    sink: BASE, // exactly what the dashboard's onboarding snippet passes: a bare origin
+    policy: policyYaml,
+    signer: createLocalSigner(walletKey),
+    fetchFn: fakePaid,
+    syncIntervalMs: 0,
+  });
+  await guarded.fetch("https://api.example.io/snippet?amt=0.004", { taskId: "snippet-e2e" });
+  const outcomes = {};
+  for (const [label, url] of [
+    ["unlisted", "https://x.test/a?to=0xUNLISTED0000000000000000000000000000000001&amt=0.04"],
+    ["unlisted-micro", "https://x.test/a?to=0xUNLISTED0000000000000000000000000000000001&amt=0.0005"],
+    ["negative", "https://api.example.io/n?amt=-50"],
+  ]) {
+    try {
+      await guarded.fetch(url, { taskId: "review-e2e" });
+      outcomes[label] = "PAID";
+    } catch (e) {
+      outcomes[label] = e?.ruleHit ?? e?.name;
+    }
+  }
+  await guarded.drain();
+  const afterSnippet = await api("GET", `/api/authorizations?agentId=${AGENT}&pageSize=200`);
+  check(
+    "onboarding snippet: a bare-origin sink delivers ledger records (used to POST to / → 405, all lost)",
+    (afterSnippet.json?.records ?? []).some((r) => r.taskId === "snippet-e2e"),
+    `${afterSnippet.json?.total} rows`,
+  );
+  check("allowlist is enforced: an unlisted counterparty is blocked", outcomes.unlisted === "counterparties.allowlist", outcomes.unlisted);
+  check("allowlist is enforced even for a micro-payment", outcomes["unlisted-micro"] === "counterparties.allowlist", outcomes["unlisted-micro"]);
+  check("a negative 402 amount is refused, not booked as negative spend", outcomes.negative === "ChallengeParseError", outcomes.negative);
+
+  const simStopped = await api("POST", "/api/simulate", { scenario: "A", agentId: AGENT });
+  check(
+    "simulator A reports what the engine decided (strict allowlist → all 25 stopped)",
+    simStopped.json?.outcome === "stopped" && simStopped.json?.blockedCount === 25 && simStopped.json?.simulated === true,
+    `${simStopped.json?.outcome} ${simStopped.json?.blockedCount}/25`,
+  );
+  const plain = await api("POST", "/api/agents", { slug: `arc-plain-${stamp}`, label: "Default policy" });
+  const simMissed = await api("POST", "/api/simulate", { scenario: "A", agentId: plain.json?.agent?.slug });
+  check(
+    "simulator A is honest about a permissive policy (nothing stopped → NOT STOPPED, not a canned 'blocked')",
+    simMissed.json?.outcome === "missed" && simMissed.json?.allowedCount === 25 && /PAID/.test(simMissed.json?.summary ?? ""),
+    `${simMissed.json?.outcome} allowed=${simMissed.json?.allowedCount}`,
+  );
+  const simBad = await api("POST", "/api/simulate", { agentId: AGENT, amount: -50 });
+  check("sandbox rejects a negative amount", simBad.status === 400, `http ${simBad.status}`);
+
+  const wrongAgent = await api("POST", `/api/policies/${AGENT}`, { raw: policyYaml.replace(`agent: ${AGENT}`, "agent: another-agent") });
+  check(
+    "policy save rejects a policy written for another agent, with a reason",
+    wrongAgent.status === 400 && /another-agent/.test(wrongAgent.json?.error ?? ""),
+    wrongAgent.json?.error?.slice(0, 60),
+  );
+  const badYaml = await api("POST", `/api/policies/${AGENT}`, { raw: "version: 1\nper_call: [" });
+  check("policy save explains a YAML syntax error", badYaml.status === 400 && /^YAML syntax error/.test(badYaml.json?.error ?? ""), badYaml.json?.error);
+
+  const paged = await api("GET", `/api/authorizations?agentId=${AGENT}&pageSize=99999&page=abc`);
+  check(
+    "ledger paging is clamped and tolerates garbage",
+    paged.status === 200 && (paged.json?.records?.length ?? 999) <= 200 && paged.json?.page === 1,
+    `http ${paged.status}, ${paged.json?.records?.length} rows`,
+  );
+
+  // 13. a stale session cookie must not trap the browser in a redirect loop
+  // (the proxy used to bounce /login → /dashboard on the cookie alone while
+  // /dashboard bounced invalid sessions back to /login — forever).
+  const stale = { cookie: "better-auth.session_token=stale.token; __Secure-better-auth.session_token=stale.token" };
+  const hop = async (url, headers) => {
+    const r = await fetch(`${BASE}${url}`, { redirect: "manual", headers });
+    return { status: r.status, to: r.headers.get("location") ? new URL(r.headers.get("location"), BASE).pathname : null };
+  };
+  const staleLogin = await hop("/login", stale);
+  const staleDash = await hop("/dashboard", stale);
+  check("stale session cookie: /login renders instead of bouncing to /dashboard", staleLogin.status === 200, `http ${staleLogin.status}`);
+  check("stale session cookie: /dashboard sends you to /login (one hop)", staleDash.status === 307 && staleDash.to === "/login", `${staleDash.status} → ${staleDash.to}`);
+  const liveLogin = await hop("/login", { cookie });
+  check("a real session on /login is sent to the dashboard", liveLogin.status === 307 && liveLogin.to === "/dashboard", `${liveLogin.status} → ${liveLogin.to}`);
+
+  // 14. auth
   const badIngest = await fetch(`${BASE}/api/authorizations`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: "Bearer sl_" + "0".repeat(40) },

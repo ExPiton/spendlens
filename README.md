@@ -28,7 +28,7 @@ But that infrastructure only guarantees the payment goes through — it **doesn'
 
 | Scenario | Problem | Status Quo | How Spendlens Solves It |
 |---|---|---|---|
-| **A: Prompt Injection** | The agent is redirected to an attacker's API via a hidden instruction on a crawled page, making 4,000 rapid calls ($0.003/call). | The wallet never alarms since no single call exceeds the per-call limit ($0.05). Funds drain. | **EWMA Burn Rate & Allowlist** catch the anomaly and halt the flow within seconds. |
+| **A: Prompt Injection** | The agent is redirected to an attacker's API via a hidden instruction on a crawled page, making 4,000 rapid calls ($0.003/call). | The wallet never alarms since no single call exceeds the per-call limit ($0.05). Funds drain. | **Counterparty rules** (allowlist, or first-seen hold/block), budgets and the **EWMA burn rate** stop the flow — *if your policy says so*: the starter policy only alerts, so tighten it (the dashboard **Simulator** shows what your saved policy would actually stop). |
 | **B: Silent Quality Degradation** | A data provider breaks and starts returning empty-bodied `200 OK` responses. | Payment keeps flowing uninterrupted since the HTTP status is still successful; money is wasted. | **Quality Classifier & Waste Analysis** immediately surfaces *"31% of spend went unmatched."* |
 | **C: Key Leakage** | The agent's signing key leaks; the attacker signs authorizations within the existing policy's limits. | Wallet policy is never violated, so the local agent has no idea. | **Arc Reconciliation Audit** compares on-chain spend against the ledger (`delta > tolerance` &rarr; CRITICAL alert & automatic halt). |
 
@@ -125,6 +125,14 @@ npm run example
 ```
 
 ### Step 4: Write a Policy File (`policies/research-crawler-01.yaml`)
+
+> **Counterparty modes.** `mode: allowlist` is strict — only addresses in `allow`
+> (and ones a human approved) can be paid. Any other counterparty is **held** for a
+> person when `first_seen.action` is `hold`, and **blocked** otherwise
+> (`counterparties.allowlist`); `auto_allow_below_usdc` does not apply. `mode: denylist`
+> runs `first_seen.action` for first contact, waving through payments at or under
+> `auto_allow_below_usdc` — and such a micro-payment does *not* vet the address, so a
+> later larger payment still meets the gate. `deny` always wins over `allow`.
 
 > With `SPENDLENS_URL` + `SPENDLENS_API_KEY` set and no local `policy`, a guard
 > follows the agent's policy from the **Policies** tab — edits apply live, no

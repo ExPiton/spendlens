@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { getPolicyBySlug, upsertPolicy } from "@/lib/db/policy";
+import { YAMLException } from "js-yaml";
+import { getPolicyBySlug, upsertPolicy, PolicyValidationError } from "@/lib/db/policy";
 import { requireSessionUser, isResponse } from "@/lib/auth/api";
 
 /** A validation failure is the *expected*, helpful kind of error here — the
@@ -10,6 +11,13 @@ import { requireSessionUser, isResponse } from "@/lib/auth/api";
  *  the UI). Anything else (a DB failure, etc.) stays generic and logged
  *  server-side instead of echoed to the client. */
 function describePolicyError(err: unknown): string {
+  if (err instanceof PolicyValidationError) return err.message;
+  if (err instanceof YAMLException) {
+    // The parser's own message is precise (and carries the line); the bare
+    // "Invalid policy YAML" used to be all a user with a typo got.
+    const at = err.mark ? ` (line ${err.mark.line + 1}, column ${err.mark.column + 1})` : "";
+    return `YAML syntax error: ${err.reason}${at}`;
+  }
   if (err instanceof z.ZodError) {
     return err.issues
       .map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`)

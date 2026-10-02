@@ -46,3 +46,6 @@ next-env.d.ts
 
 # generated SBOM (CI publishes it as an artifact / release asset)
 sbom.cdx.json
+
+# runtime lock written by the Claude desktop app's scheduled tasks
+.claude/scheduled_tasks.lock

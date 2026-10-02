@@ -79,8 +79,27 @@ function nodeFs(): NodeFs | null {
 
 // ── sink / server URL ───────────────────────────────────────────────────────
 
+/** A bare origin (`https://spendlens.example.com`) is not an ingest endpoint —
+ *  posting there answers 405 and every record is lost — so it gets the
+ *  `/api/authorizations` path. A URL that already has a path is taken as given
+ *  (a custom collector, or the full ingest URL). */
+function withIngestPath(url: string): string {
+  if (/\/api\/authorizations\/?$/.test(url)) return url;
+  try {
+    const u = new URL(url);
+    if (u.pathname !== "" && u.pathname !== "/") return url;
+  } catch {
+    // not parseable: fall through and append, like the env path always did
+  }
+  return url.replace(/\/$/, "") + "/api/authorizations";
+}
+
 export function resolveSink(explicit: LedgerSink | undefined): LedgerSink | undefined {
+  if (typeof explicit === "string") return withIngestPath(explicit);
   if (explicit) return explicit;
+  // SPENDLENS_URL is, by definition, the Spendlens server — so the ingest
+  // path is always appended (a server behind a path prefix still works),
+  // unlike an explicit `sink`, which may be a custom collector.
   const url = envValue("SPENDLENS_URL");
   if (!url) return undefined;
   return /\/api\/authorizations\/?$/.test(url)
@@ -100,6 +119,36 @@ export function resolveServerUrl(
     envValue("SPENDLENS_URL");
   if (!raw) return undefined;
   return raw.replace(/\/api\/authorizations\/?$/, "").replace(/\/$/, "");
+}
+
+// ── diagnostics ─────────────────────────────────────────────────────────────
+
+/** A `console.warn` that repeats a given message at most once per `everyMs`.
+ *  The control plane polls every 15 s and the queue flushes every second, so an
+ *  unreachable or misconfigured server used to be completely silent (records
+ *  vanished, payments stayed blocked with no explanation) — and logging every
+ *  attempt would flood the agent's output instead. */
+export function makeThrottledWarn(everyMs = 60_000): (key: string, message: string) => void {
+  const last = new Map<string, number>();
+  return (key, message) => {
+    const now = Date.now();
+    const prev = last.get(key);
+    if (prev !== undefined && now - prev < everyMs) return;
+    last.set(key, now);
+    console.warn(message);
+  };
+}
+
+/** Default `onError` for the telemetry queue: tells the operator that ledger
+ *  records are not reaching Spendlens (throttled). */
+export function defaultQueueOnError(label: string): (err: Error, lostCount: number) => void {
+  const warn = makeThrottledWarn();
+  return (err, lostCount) =>
+    warn(
+      err.message,
+      `[spendlens] ${label}: telemetry is not reaching Spendlens — ${err.message}` +
+        (lostCount > 0 ? ` (${lostCount} record(s) affected)` : ""),
+    );
 }
 
 // ── control plane: kill switch + remote policy ─────────────────────────────
@@ -142,20 +191,36 @@ export class ControlPlane {
   private appliedVersion: number | null = null;
   private remoteHalted = false;
   private readonly fetchFn: typeof fetch;
+  private readonly warn = makeThrottledWarn();
 
   constructor(private readonly opts: ControlPlaneOptions) {
     this.fetchFn = opts.fetchFn ?? fetch;
     if (opts.remotePolicy && opts.failClosed) opts.engine.halt("policy.unavailable");
   }
 
+  /** A failed poll keeps the last known state (see the class doc) — but it
+   *  must not be silent: a fail-closed agent that can never load its policy
+   *  (wrong URL/key, or a server too old to serve `/api/sdk/config`) would
+   *  otherwise just answer every payment with an unexplained
+   *  `policy.unavailable`. */
+  private reportSyncError(err: unknown): void {
+    const detail = err instanceof Error ? err.message : String(err);
+    const stuck =
+      this.opts.engine.getHaltRule() === "policy.unavailable"
+        ? " Every payment stays blocked until the dashboard policy loads — check SPENDLENS_URL and SPENDLENS_API_KEY, " +
+          "that the server is up to date (it must serve /api/sdk/config), or pass an explicit `policy`."
+        : "";
+    this.warn(detail, `[spendlens] ${this.opts.label}: could not sync with Spendlens — ${detail}.${stuck}`);
+  }
+
   /** Starts background polling; resolves once the first sync settles
    *  (successfully or not). Idempotent. */
   start(): Promise<void> {
     if (!this.firstSync) {
-      this.firstSync = this.sync().catch(() => undefined);
+      this.firstSync = this.sync().catch((err) => this.reportSyncError(err));
       const every = this.opts.intervalMs ?? 15_000;
       if (every > 0) {
-        this.timer = setInterval(() => void this.sync().catch(() => undefined), every);
+        this.timer = setInterval(() => void this.sync().catch((err) => this.reportSyncError(err)), every);
         (this.timer as { unref?: () => void }).unref?.();
       }
     }
@@ -250,16 +315,36 @@ const sleep = (ms: number) =>
 export async function requestEscalation(
   escalation: EscalationConfig,
   payload: EscalationPayload,
-  opts: { apiKey?: string; fetchFn?: typeof fetch; pollIntervalMs?: number } = {},
+  opts: {
+    apiKey?: string;
+    /** The Spendlens server's URL. The API key is sent ONLY to this origin:
+     *  the webhook is whatever the policy says (often a third party — the
+     *  default used to be example.com) and its `pollUrl` answer is chosen by
+     *  the webhook, so handing either the key would leak the agent's ingest
+     *  credential. Without it the key is never sent. */
+    trustedOrigin?: string;
+    fetchFn?: typeof fetch;
+    pollIntervalMs?: number;
+  } = {},
 ): Promise<{ approved: boolean; reason: "decided" | "timeout" | "error" }> {
   const fallback = escalation.onTimeout === "allow";
   if (!escalation.webhook) return { approved: fallback, reason: "error" };
   const doFetch = opts.fetchFn ?? fetch;
   const deadline = Date.now() + Math.max(1, escalation.timeoutSeconds) * 1000;
-  const headers: Record<string, string> = {
-    "content-type": "application/json",
-    ...(opts.apiKey ? { authorization: `Bearer ${opts.apiKey}` } : {}),
+  const originOf = (u: string): string | null => {
+    try {
+      return new URL(u).origin;
+    } catch {
+      return null;
+    }
   };
+  const trusted = opts.trustedOrigin ? originOf(opts.trustedOrigin) : null;
+  const headersFor = (url: string): Record<string, string> => ({
+    "content-type": "application/json",
+    ...(opts.apiKey && trusted && originOf(url) === trusted
+      ? { authorization: `Bearer ${opts.apiKey}` }
+      : {}),
+  });
 
   const withTimeout = async (url: string, init: RequestInit) => {
     const controller = new AbortController();
@@ -282,7 +367,7 @@ export async function requestEscalation(
   try {
     const res = await withTimeout(escalation.webhook, {
       method: "POST",
-      headers,
+      headers: headersFor(escalation.webhook),
       body: JSON.stringify(payload),
     });
     if (!res.ok) return { approved: fallback, reason: "error" };
@@ -294,10 +379,16 @@ export async function requestEscalation(
     }
 
     const pollUrl = first.pollUrl ?? `${escalation.webhook.replace(/\/$/, "")}/${first.id}`;
+    // The poll target is named by the webhook's own response — never follow
+    // it to a host the policy didn't configure (nor to one the agent trusts).
+    const pollOrigin = originOf(pollUrl);
+    if (pollOrigin === null || (pollOrigin !== originOf(escalation.webhook) && pollOrigin !== trusted)) {
+      return { approved: fallback, reason: "error" };
+    }
     const interval = opts.pollIntervalMs ?? 2_000;
     while (Date.now() + interval < deadline) {
       await sleep(interval);
-      const poll = await withTimeout(pollUrl, { method: "GET", headers });
+      const poll = await withTimeout(pollUrl, { method: "GET", headers: headersFor(pollUrl) });
       if (!poll.ok) continue;
       const answer = decided((await poll.json().catch(() => ({}))) as Answer);
       if (answer !== null) return { approved: answer, reason: "decided" };

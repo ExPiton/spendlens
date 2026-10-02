@@ -9,6 +9,13 @@ import { requireSessionUser, requireApiKey, isResponse } from "@/lib/auth/api";
 import { enforceRateLimit } from "@/lib/rate-limit";
 import type { Decision, Quality } from "@/lib/contracts";
 
+/** A positive integer from a query parameter, clamped to [1, max]; anything
+ *  unparseable (`?page=abc` used to reach SQL as OFFSET NaN → a 500) falls back. */
+function intParam(value: string | null, fallback: number, max: number): number {
+  const n = Number.parseInt(value ?? "", 10);
+  return Number.isFinite(n) && n >= 1 ? Math.min(n, max) : fallback;
+}
+
 /** Dashboard read — session-scoped. */
 export async function GET(request: NextRequest) {
   const auth = await requireSessionUser();
@@ -22,8 +29,8 @@ export async function GET(request: NextRequest) {
       decision: (searchParams.get("decision") as Decision) || undefined,
       quality: (searchParams.get("quality") as Quality | "any") || undefined,
       search: searchParams.get("search") || undefined,
-      page: parseInt(searchParams.get("page") || "1", 10),
-      pageSize: parseInt(searchParams.get("pageSize") || "50", 10),
+      page: intParam(searchParams.get("page"), 1, 100_000),
+      pageSize: intParam(searchParams.get("pageSize"), 50, 200),
     };
     return NextResponse.json(await listAuthorizations(auth.userId, filters));
   } catch (err) {

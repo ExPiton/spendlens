@@ -9,6 +9,7 @@ import {
   ControlPlane,
   assertMainnetPolicy,
   chainIdFromNetwork,
+  defaultQueueOnError,
   loadPolicyInput,
   requestEscalation,
   resolveServerUrl,
@@ -230,6 +231,7 @@ export function guardGateway(
   const queue = sink
     ? new AsyncLedgerQueue(sink, {
         headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined,
+        onError: defaultQueueOnError(label),
         onResponse: (res) =>
           control?.applyStatus(
             res.status === 423 ? "paused" : res.headers.get("x-spendlens-agent-status"),
@@ -291,7 +293,10 @@ export function guardGateway(
   };
 
   client.onBeforePaymentCreation(async ({ paymentRequired, selectedRequirements }) => {
-    const amountMicroUsdc = Math.round(Number(selectedRequirements.amount));
+    const requestedMicro = Math.round(Number(selectedRequirements.amount));
+    // A non-numeric amount is blocked by the policy engine (challenge.invalid_amount);
+    // record 0 rather than NaN so the ledger row stays valid.
+    const amountMicroUsdc = Number.isFinite(requestedMicro) ? requestedMicro : 0;
     const resource = paymentRequired.resource?.url || currentUrl || "";
     const chainId = chainIdFromNetwork(selectedRequirements.network) ?? ARC.chainId;
     const taskId = currentTaskId;
@@ -299,7 +304,7 @@ export function guardGateway(
       agentId: options.agentId,
       taskId,
       counterparty: selectedRequirements.payTo,
-      amount: amountMicroUsdc / 1_000_000,
+      amount: Number.isFinite(requestedMicro) ? requestedMicro / 1_000_000 : Number.NaN,
       resource,
       now: Date.now(),
     };
@@ -338,7 +343,7 @@ export function guardGateway(
             amountUsdc: amountMicroUsdc / 1_000_000,
             ruleHit: verdict.ruleHit,
           },
-          { apiKey },
+          { apiKey, trustedOrigin: serverUrl },
         ));
       }
       if (!approved) {
@@ -617,7 +622,13 @@ export async function fetchWalletSettlements(opts: {
   for (let page = 0; url && page < MAX_PAGES; page++) {
     if (seen.has(url)) break;
     seen.add(url);
-    const res = await doFetch(url, { headers: { accept: "application/json" } });
+    // A Gateway call that never answers used to hang the scheduled reconcile
+    // forever — while holding its advisory-lock transaction, so no instance
+    // reconciled anything (and /api/health still said "ok").
+    const res = await doFetch(url, {
+      headers: { accept: "application/json" },
+      signal: AbortSignal.timeout(20_000),
+    });
     if (!res.ok) {
       throw new Error(`Gateway transfers query failed (${res.status}): ${await res.text().catch(() => "")}`);
     }

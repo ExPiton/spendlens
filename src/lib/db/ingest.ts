@@ -5,7 +5,6 @@ import { db } from "./index";
 import { agent as agentTable, authorization as authTable } from "./schema";
 import { AuthorizationRecordSchema } from "@/lib/contracts";
 import { normalizeCounterparty } from "@/lib/counterparty";
-import { ARC } from "@/lib/arc";
 
 /**
  * Writes SDK-submitted authorization records into the ledger for one agent.
@@ -79,9 +78,14 @@ export async function insertAuthorizations(
 }
 
 /**
- * Writes one synthetic "allow / ok" authorization for an agent the user owns —
+ * Writes one sample "allow / ok" authorization for an agent the user owns —
  * powers the dashboard's "Send test event" button so a new user can see the
  * ledger react without wiring the SDK first.
+ *
+ * It is a sample, so it must not look like money: amount 0 and no chain id.
+ * (It used to be 0.003 USDC on the configured Arc chain with a made-up body
+ * hash — that inflated TOTAL SPEND, and as ledger spend on mainnet it made
+ * reconciliation show a phantom "pending" row against the agent's wallet.)
  */
 export async function sendTestEvent(userId: string, slug: string): Promise<void> {
   const [agent] = await db
@@ -100,16 +104,16 @@ export async function sendTestEvent(userId: string, slug: string): Promise<void>
     ts: now,
     taskId: "task-test-event",
     counterparty: "api.example.io",
-    resource: "https://api.example.io/v1/data",
-    amountMicroUsdc: 3000,
+    resource: "spendlens://sample-event",
+    amountMicroUsdc: 0,
     decision: "allow",
     ruleHit: null,
-    nonce: randomUUID().replace(/-/g, "").slice(0, 32),
-    chainId: ARC.chainId,
+    nonce: null,
+    chainId: null,
     httpStatus: 200,
     latencyMs: 128,
     bodyBytes: 512,
-    bodySha256: "test-event-" + randomUUID().replace(/-/g, ""),
+    bodySha256: null,
     quality: "ok",
     settlementId: null,
     createdAt: now,

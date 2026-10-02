@@ -124,9 +124,11 @@ export async function renameAgent(
   agentId: string,
   label: string,
 ): Promise<void> {
+  const trimmed = label.trim();
+  if (!trimmed) throw new Error("An agent needs a display name.");
   await db
     .update(agentTable)
-    .set({ label: label.trim(), updatedAt: new Date() })
+    .set({ label: trimmed, updatedAt: new Date() })
     .where(and(eq(agentTable.id, agentId), eq(agentTable.userId, userId)));
 }
 

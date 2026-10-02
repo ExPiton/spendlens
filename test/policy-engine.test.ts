@@ -49,6 +49,18 @@ const mockPolicy: PolicyConfig = {
   },
 };
 
+/** `mode: denylist` is the only mode where first_seen's micro-payment
+ *  exemption (auto_allow_below_usdc) applies — an allowlist is strict. */
+const denylistPolicy: PolicyConfig = {
+  ...mockPolicy,
+  counterparties: {
+    mode: "denylist",
+    allow: ["api.example.io"],
+    deny: ["malicious-api.io"],
+    firstSeen: { action: "hold", autoAllowBelowUsdc: 0.001 },
+  },
+};
+
 describe("PolicyEngine Evaluation Order", () => {
   test("Deny list check immediately blocks known malicious counterparties", async () => {
     const engine = new PolicyEngine(mockPolicy, new InMemoryPolicyStateStore());
@@ -114,9 +126,9 @@ describe("PolicyEngine Evaluation Order", () => {
     assert.equal(blockingVerdict.ruleHit, "budgets.task");
   });
 
-  test("Allowlist and First-seen micro amounts are auto-allowed below threshold", async () => {
+  test("First-seen micro amounts are auto-allowed below threshold (denylist mode)", async () => {
     const store = new InMemoryPolicyStateStore();
-    const engine = new PolicyEngine(mockPolicy, store);
+    const engine = new PolicyEngine(denylistPolicy, store);
 
     // First seen with 0.0005 <= 0.001 auto_allow_below_usdc
     const v1 = await engine.evaluate({
@@ -163,7 +175,7 @@ describe("PolicyEngine Evaluation Order", () => {
     // micro-amount (auto-allowed by first_seen), used to get permanently
     // blocked from its SECOND call onward — `isSeen` becoming true tripped
     // an unconditional block instead of being treated as "already vetted".
-    const engine = new PolicyEngine(mockPolicy, new InMemoryPolicyStateStore());
+    const engine = new PolicyEngine(denylistPolicy, new InMemoryPolicyStateStore());
     const call = () =>
       engine.evaluate({
         agentId: "research-crawler-01",
@@ -181,7 +193,7 @@ describe("PolicyEngine Evaluation Order", () => {
     const policy: PolicyConfig = {
       ...mockPolicy,
       counterparties: {
-        ...mockPolicy.counterparties,
+        ...denylistPolicy.counterparties,
         allow: ["e1.io", "e2.io", "e3.io", "e4.io", "e5.io", "e6.io"],
       },
       anomaly: {
@@ -248,7 +260,7 @@ describe("PolicyEngine Evaluation Order", () => {
     const alertPolicy: PolicyConfig = {
       ...mockPolicy,
       counterparties: {
-        ...mockPolicy.counterparties,
+        ...denylistPolicy.counterparties,
         firstSeen: { action: "alert", autoAllowBelowUsdc: 0 },
       },
     };
@@ -265,5 +277,109 @@ describe("PolicyEngine Evaluation Order", () => {
     // discarded.
     assert.equal(verdict.decision, "allow");
     assert.equal(verdict.ruleHit, "counterparties.first_seen.action");
+  });
+});
+
+describe("counterparty gate: allowlist is strict, micro-payments earn no trust", () => {
+  const ATTACKER = "0xbadbadbadbadbadbadbadbadbadbadbadbadbad0";
+  const GOOD = "0x1111111111111111111111111111111111111111";
+  const withCounterparties = (c: Partial<PolicyConfig["counterparties"]>): PolicyConfig => ({
+    ...mockPolicy,
+    budgets: [{ scope: "day", limitUsdc: 100 }],
+    perCall: { maxUsdc: 10, maxCallsPerMinute: 600 },
+    counterparties: { mode: "allowlist", allow: [GOOD], deny: [], firstSeen: { action: "block", autoAllowBelowUsdc: 0.001 }, ...c },
+  });
+  const call = (e: PolicyEngine, counterparty: string, amount: number, now?: number) =>
+    e.evaluate({ agentId: "a", counterparty, amount, resource: "r", now });
+
+  test("allowlist mode blocks a counterparty that is not listed, for every non-hold first_seen action", async () => {
+    for (const action of ["block", "alert", "allow"] as const) {
+      const e = new PolicyEngine(withCounterparties({ firstSeen: { action, autoAllowBelowUsdc: 0.001 } }), new InMemoryPolicyStateStore());
+      const v = await call(e, ATTACKER, 0.5);
+      assert.equal(v.decision, "block", `first_seen.action=${action}`);
+      assert.equal(v.ruleHit, "counterparties.allowlist");
+    }
+  });
+
+  test("allowlist mode + first_seen hold sends an unlisted counterparty to a human", async () => {
+    const e = new PolicyEngine(withCounterparties({ firstSeen: { action: "hold", autoAllowBelowUsdc: 0.001 } }), new InMemoryPolicyStateStore());
+    const v = await call(e, ATTACKER, 0.5);
+    assert.equal(v.decision, "hold");
+    assert.equal(v.ruleHit, "counterparties.first_seen.action");
+  });
+
+  test("allowlist mode ignores auto_allow_below_usdc: a micro-payment to an unlisted address is still gated", async () => {
+    const e = new PolicyEngine(withCounterparties({}), new InMemoryPolicyStateStore());
+    assert.equal((await call(e, ATTACKER, 0.0009)).decision, "block");
+  });
+
+  test("an allowlisted counterparty is allowed, and the deny list still wins over the allow list", async () => {
+    const e = new PolicyEngine(withCounterparties({ deny: [GOOD] }), new InMemoryPolicyStateStore());
+    assert.equal((await call(e, GOOD, 0.5)).ruleHit, "counterparties.deny");
+    const f = new PolicyEngine(withCounterparties({}), new InMemoryPolicyStateStore());
+    assert.equal((await call(f, GOOD, 0.5)).decision, "allow");
+  });
+
+  test("a human-approved hold vets the counterparty: the next call is not held again", async () => {
+    const e = new PolicyEngine(withCounterparties({ firstSeen: { action: "hold", autoAllowBelowUsdc: 0.001 } }), new InMemoryPolicyStateStore());
+    const input = { agentId: "a", counterparty: ATTACKER, amount: 0.5, resource: "r" };
+    assert.equal((await e.evaluate(input)).decision, "hold");
+    e.recordHoldApproved(input); // the escalation was approved and the payment made
+    assert.equal((await e.evaluate(input)).decision, "allow");
+  });
+
+  test("REGRESSION: a micro-payment must not whitelist the counterparty for a later, larger one", async () => {
+    // denylist mode + first_seen block: $0.0009 passes the exemption, but the
+    // address is still first-seen — the $0.90 that follows used to sail through
+    // because the micro-payment had marked it "seen".
+    const e = new PolicyEngine(
+      withCounterparties({ mode: "denylist", allow: [], firstSeen: { action: "block", autoAllowBelowUsdc: 0.001 } }),
+      new InMemoryPolicyStateStore(),
+    );
+    const small = await call(e, ATTACKER, 0.0009);
+    assert.equal(small.decision, "allow");
+    assert.equal(small.autoAllowed, true);
+    const big = await call(e, ATTACKER, 0.9);
+    assert.equal(big.decision, "block");
+    assert.equal(big.ruleHit, "counterparties.first_seen.action");
+  });
+
+  test("a payment that cleared the gate (alert) does vet the counterparty", async () => {
+    const e = new PolicyEngine(
+      withCounterparties({ mode: "denylist", allow: [], firstSeen: { action: "alert", autoAllowBelowUsdc: 0.001 } }),
+      new InMemoryPolicyStateStore(),
+    );
+    const first = await call(e, ATTACKER, 0.5);
+    assert.equal(first.ruleHit, "counterparties.first_seen.action");
+    assert.equal(first.autoAllowed, undefined);
+    assert.equal((await call(e, ATTACKER, 0.5)).ruleHit, null, "already vetted — not alerted again");
+  });
+});
+
+describe("invalid amounts from a 402 are refused, never booked as spend", () => {
+  const policy: PolicyConfig = {
+    ...mockPolicy,
+    budgets: [{ scope: "day", limitUsdc: 1 }],
+    perCall: { maxUsdc: 5, maxCallsPerMinute: 600 },
+    counterparties: { mode: "denylist", allow: ["api.example.io"], deny: [], firstSeen: { action: "alert", autoAllowBelowUsdc: 1 } },
+  };
+
+  for (const bad of [-50, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+    test(`amount ${bad} is blocked with challenge.invalid_amount`, async () => {
+      const e = new PolicyEngine(policy, new InMemoryPolicyStateStore());
+      const v = await e.evaluate({ agentId: "a", counterparty: "api.example.io", amount: bad, resource: "r" });
+      assert.equal(v.decision, "block");
+      assert.equal(v.ruleHit, "challenge.invalid_amount");
+    });
+  }
+
+  test("REGRESSION: a negative amount no longer refills the day budget", async () => {
+    const e = new PolicyEngine(policy, new InMemoryPolicyStateStore());
+    const t = Date.now();
+    const go = (amount: number, i: number) =>
+      e.evaluate({ agentId: "a", counterparty: "api.example.io", amount, resource: "r", now: t + i });
+    assert.equal((await go(0.9, 0)).decision, "allow");
+    await go(-50, 1); // used to be booked as -50 USDC of spend
+    assert.equal((await go(0.9, 2)).decision, "block", "the 1 USDC day budget is still spent");
   });
 });

@@ -109,6 +109,20 @@ export async function listEscalations(
   return rows.map(toView);
 }
 
+/** Escalations this tenant received in the last `withinSeconds` (any status). */
+export async function countRecentEscalations(userId: string, withinSeconds: number): Promise<number> {
+  const [row] = await db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(escTable)
+    .where(
+      and(
+        eq(escTable.userId, userId),
+        sql`${escTable.createdAt} > now() - make_interval(secs => ${withinSeconds})`,
+      ),
+    );
+  return row?.n ?? 0;
+}
+
 export async function countPendingEscalations(userId: string): Promise<number> {
   const [row] = await db
     .select({ n: sql<number>`count(*)::int` })

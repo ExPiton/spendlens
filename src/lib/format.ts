@@ -8,8 +8,13 @@
  * ("31.3%").
  */
 
+/** U+202F NARROW NO-BREAK SPACE — the SI digit-group separator. A plain
+ *  space let a table cell wrap "1 801" onto two lines and read as two
+ *  numbers; this one never breaks and sits tight. */
+export const DIGIT_GROUP_SEPARATOR = "\u202f";
+
 function groupThousands(digits: string): string {
-  return digits.replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+  return digits.replace(/\B(?=(\d{3})+(?!\d))/g, DIGIT_GROUP_SEPARATOR);
 }
 
 const MICRO = 1_000_000;
@@ -96,10 +101,15 @@ export function formatPeriod(startIso: string, endIso: string): string {
   const monthName = (d: Date) =>
     new Intl.DateTimeFormat("en-US", { month: "short", timeZone: "UTC" }).format(d);
 
+  const sameMonth =
+    start.getUTCFullYear() === end.getUTCFullYear() && start.getUTCMonth() === end.getUTCMonth();
+  // A ledger that lives on one calendar day is "Sep 15, 2026", not "Sep 15 – 15".
   const range =
-    start.getUTCFullYear() === end.getUTCFullYear() && start.getUTCMonth() === end.getUTCMonth()
-      ? `${monthName(start)} ${start.getUTCDate()} – ${end.getUTCDate()}, ${end.getUTCFullYear()}`
-      : `${monthName(start)} ${start.getUTCDate()} – ${monthName(end)} ${end.getUTCDate()}, ${end.getUTCFullYear()}`;
+    sameMonth && start.getUTCDate() === end.getUTCDate()
+      ? `${monthName(start)} ${start.getUTCDate()}, ${start.getUTCFullYear()}`
+      : sameMonth
+        ? `${monthName(start)} ${start.getUTCDate()} – ${end.getUTCDate()}, ${end.getUTCFullYear()}`
+        : `${monthName(start)} ${start.getUTCDate()} – ${monthName(end)} ${end.getUTCDate()}, ${end.getUTCFullYear()}`;
   return `${range} UTC`;
 }
 

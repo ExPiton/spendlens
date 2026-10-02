@@ -334,6 +334,63 @@ describe("repository (SQL aggregates) — integration", { skip: !RUN }, () => {
     assert.equal(await esc.decideEscalation(userId, expired.id, true, userId), null);
   });
 
+  it("overview reconciliation delta is a total discrepancy: +5 and −5 don't cancel to a reassuring 0 (REGRESSION)", async () => {
+    const { userId, agentId, slug } = await makeUserAndAgent("delta-abs");
+    await ingest.insertAuthorizations({ userId, agentId, agentSlug: slug }, [
+      record({ counterparty: "a.io", amountMicroUsdc: 10_000 }), // ledger ahead of the chain → pending
+      record({ counterparty: "b.io", amountMicroUsdc: 10_000 }),
+    ]);
+    await repo.importSettlements({ userId, agentId }, 5042002, [
+      { counterparty: "a.io", chainAmountMicroUsdc: 5_000 },  // −5000
+      { counterparty: "b.io", chainAmountMicroUsdc: 15_000 }, // +5000 → critical
+    ]);
+    const stats = await repo.getOverviewStats(userId, slug);
+    assert.equal(stats.reconciliationStatus, "critical");
+    assert.equal(stats.reconciliationDeltaMicroUsdc, 10_000, "|−5000| + |+5000|, not 0");
+  });
+
+  it("sendTestEvent writes a sample row that is not money: zero amount, off-chain, no fake hash (REGRESSION)", async () => {
+    const { userId, slug } = await makeUserAndAgent("test-event");
+    await ingest.sendTestEvent(userId, slug);
+    const stats = await repo.getOverviewStats(userId, slug);
+    assert.equal(stats.totalSpendMicroUsdc, 0, "a sample event must not inflate TOTAL SPEND");
+    const { records } = await repo.listAuthorizations(userId, { agentId: slug });
+    assert.equal(records.length, 1);
+    assert.equal(records[0].chainId, null, "no chain id → never joins a wallet's on-chain reconciliation");
+    assert.equal(records[0].bodySha256, null, "no fabricated digest");
+  });
+
+  it("policy save: the `agent:` field must match the agent; agent rename refuses an empty label", async () => {
+    const policyMod = await import("../src/lib/db/policy");
+    const agentsMod = await import("../src/lib/db/agents");
+    const { userId, slug, agentId } = await makeUserAndAgent("policy-save");
+    const good = policyMod.defaultPolicyYaml(slug, null);
+    await policyMod.upsertPolicy(userId, slug, good);
+
+    const wrong = good.replace(`agent: ${slug}`, "agent: some-other-agent");
+    await assert.rejects(
+      policyMod.upsertPolicy(userId, slug, wrong),
+      (e: unknown) => e instanceof policyMod.PolicyValidationError && /some-other-agent/.test((e as Error).message),
+    );
+
+    await assert.rejects(agentsMod.renameAgent(userId, agentId, "   "), /display name/);
+  });
+
+  it("countRecentEscalations counts only this tenant's recent holds (drives the approval e-mail throttle)", async () => {
+    const esc = await import("../src/lib/db/escalations");
+    const a = await makeUserAndAgent("esc-throttle-a");
+    const b = await makeUserAndAgent("esc-throttle-b");
+    const mk = (who: typeof a) =>
+      esc.createEscalation({
+        userId: who.userId, agentId: who.agentId, agentSlug: who.slug, counterparty: "x.io", resource: "r",
+        amountMicroUsdc: 1, ruleHit: null, taskId: null, nonce: null, expiresAt: new Date(Date.now() + 60_000),
+      });
+    for (let i = 0; i < 3; i++) await mk(a);
+    await mk(b);
+    assert.equal(await esc.countRecentEscalations(a.userId, 600), 3);
+    assert.equal(await esc.countRecentEscalations(b.userId, 600), 1);
+  });
+
   it("RATE_LIMIT_STORE=postgres: one shared counter across callers", async () => {
     const { enforceRateLimit } = await import("../src/lib/rate-limit");
     const prev = process.env.RATE_LIMIT_STORE;

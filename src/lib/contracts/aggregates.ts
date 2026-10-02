@@ -17,6 +17,10 @@ export const OverviewStatsSchema = z.object({
   blockedMicroUsdc: z.number().int().nonnegative(),
   reconciliationStatus: ReconciliationStatusSchema,
   reconciliationDeltaMicroUsdc: z.number().int(),
+  /** How many (agent, chain, counterparty) rows reconciliation has checked.
+   *  0 = nothing to compare yet (no wallet address on file) — then a status
+   *  of "ok" means "not set up", not "all good", and the UI must say so. */
+  reconciledRows: z.number().int().nonnegative().default(0),
 });
 export type OverviewStats = z.infer<typeof OverviewStatsSchema>;
 

@@ -8,6 +8,12 @@ const nextConfig: NextConfig = {
   turbopack: {
     root: path.join(__dirname),
   },
+  // Next 16 blocks dev-only assets (HMR, client chunks) for any hostname but
+  // `localhost` — without this, opening the dev server as http://127.0.0.1:3000
+  // (the name the editor's preview pane needs, and one `lib/auth` already
+  // trusts in dev) serves a page that never hydrates: forms submit as plain
+  // GETs and every button is dead. Dev only; no effect on `next build`/`start`.
+  allowedDevOrigins: ["127.0.0.1"],
   // Emit a self-contained server bundle (`.next/standalone`) so the Docker
   // image can run `node server.js` without a full `node_modules` tree.
   output: "standalone",

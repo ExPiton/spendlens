@@ -85,9 +85,10 @@ export async function getOverviewStats(
     blockedMicroUsdc,
     reconciliationStatus: worstReconciliationStatus(reconciliation),
     reconciliationDeltaMicroUsdc: reconciliation.reduce(
-      (sum, r) => sum + r.deltaMicroUsdc,
+      (sum, r) => sum + Math.abs(r.deltaMicroUsdc),
       0,
     ),
+    reconciledRows: reconciliation.length,
   });
 }
 

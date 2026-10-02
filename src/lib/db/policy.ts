@@ -14,6 +14,15 @@ export interface LoadedPolicy {
   updatedAt: string;
 }
 
+/** A problem with the policy the user submitted, worded for the user (unlike
+ *  a DB failure, it is safe — and useful — to show verbatim). */
+export class PolicyValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PolicyValidationError";
+  }
+}
+
 async function ownedAgent(userId: string, slug: string) {
   const [row] = await db
     .select({ id: agentTable.id })
@@ -61,6 +70,12 @@ export async function upsertPolicy(
   if (!owned) throw new Error("Agent not found");
 
   const { config } = parsePolicyYaml(rawYaml);
+  if (config.agent !== slug) {
+    throw new PolicyValidationError(
+      `The policy's "agent" field is "${config.agent}" but it is being saved for "${slug}" — set \`agent: ${slug}\` ` +
+        `(copying another agent's policy is fine, just change that line).`,
+    );
+  }
 
   const [existing] = await db
     .select({ version: policyTable.version })

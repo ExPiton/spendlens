@@ -10,6 +10,14 @@ export interface PaymentChallenge {
   rawHeaders: Record<string, string>;
 }
 
+/** A payment amount must be a real, non-negative number. The challenge comes
+ *  from the *paid server* — i.e. untrusted input — and a negative amount used
+ *  to be accepted and booked as negative spend, refilling every budget; an
+ *  `Infinity` or `NaN` slipped past the comparisons the same way. */
+function isValidAmount(n: number): boolean {
+  return typeof n === "number" && Number.isFinite(n) && n >= 0;
+}
+
 /**
  * Parses HTTP 402 (Payment Required) headers according to the Nanopayments & x402 conventions.
  * Supports:
@@ -56,9 +64,12 @@ export function parsePaymentChallenge(
     headerMap["x402-chain-id"] ||
     headerMap["x-chain-id"];
 
+  let invalidAmount: string | null = null;
+
   if (payTo && amountStr) {
     const parsedAmount = parseFloat(amountStr);
-    if (!Number.isNaN(parsedAmount) && parsedAmount >= 0) {
+    if (!isValidAmount(parsedAmount)) invalidAmount = amountStr;
+    else {
       return {
         payTo,
         maxAmountRequired: parsedAmount,
@@ -82,7 +93,9 @@ export function parsePaymentChallenge(
     const extractedPayTo = payToMatch ? payToMatch[1] || payToMatch[2] : null;
     const extractedAmount = amountMatch ? parseFloat(amountMatch[1] || amountMatch[2]) : null;
 
-    if (extractedPayTo && extractedAmount !== null && !Number.isNaN(extractedAmount)) {
+    if (extractedPayTo && extractedAmount !== null && !isValidAmount(extractedAmount)) {
+      invalidAmount ??= String(extractedAmount);
+    } else if (extractedPayTo && extractedAmount !== null) {
       return {
         payTo: extractedPayTo,
         maxAmountRequired: extractedAmount,
@@ -107,7 +120,9 @@ export function parsePaymentChallenge(
 
       if (bPayTo && (typeof bAmount === "number" || typeof bAmount === "string")) {
         const parsedAmount = typeof bAmount === "number" ? bAmount : parseFloat(bAmount);
-        if (!Number.isNaN(parsedAmount)) {
+        if (!isValidAmount(parsedAmount)) {
+          invalidAmount ??= String(bAmount);
+        } else {
           return {
             payTo: bPayTo,
             maxAmountRequired: parsedAmount,
@@ -125,6 +140,8 @@ export function parsePaymentChallenge(
   }
 
   throw new ChallengeParseError(
-    "Response did not contain valid x402 or WWW-Authenticate payment parameters (payTo and amount).",
+    invalidAmount !== null
+      ? `the 402 response asked for an invalid payment amount (${invalidAmount}) — it must be a finite, non-negative number`
+      : "Response did not contain valid x402 or WWW-Authenticate payment parameters (payTo and amount).",
   );
 }

@@ -207,11 +207,10 @@ escalation: { webhook: "https://example.com/x", timeout_seconds: 30, on_timeout:
     );
   });
 
-  it("REGRESSION: the escalation webhook is called with the agent's API key, not anonymously", async () => {
-    // Spendlens's own /api/escalate requires an API key; without one the
-    // guard used to call the webhook with no Authorization header at all,
-    // which against the real endpoint means a 401 -> every hold silently
-    // resolves to denied.
+  /** Runs one held payment through guardGateway against a Spendlens server at
+   *  https://hook.test whose policy escalates to `webhook`; returns the
+   *  Authorization header each URL was called with (null = anonymous). */
+  async function escalationAuth(webhook: string): Promise<Record<string, string | null>> {
     const HOLD_POLICY = `version: 1
 agent: t
 budgets: [{ scope: task, limit_usdc: 5 }, { scope: hour, limit_usdc: 50 }, { scope: day, limit_usdc: 500 }]
@@ -225,30 +224,46 @@ anomaly:
   burn_rate: { baseline: ewma, halflife_minutes: 15, z_threshold: 4, action: alert }
   new_counterparty_rate: { max_per_hour: 50, action: alert }
 quality: { failure_status_codes: [500], empty_body_is_failure: true, json_schema: null, max_latency_ms: 4000 }
-escalation: { webhook: "https://hook.test/escalate", timeout_seconds: 5, on_timeout: block }
+escalation: { webhook: "${webhook}", timeout_seconds: 5, on_timeout: block }
 `;
     const origFetch = globalThis.fetch;
-    let seenAuth: string | null = null;
-    globalThis.fetch = (async (_url: string, init?: RequestInit) => {
-      seenAuth = new Headers(init?.headers).get("authorization");
-      return new Response(JSON.stringify({ approved: true }), { status: 200 });
+    const seen: Record<string, string | null> = {};
+    globalThis.fetch = (async (url: string, init?: RequestInit) => {
+      seen[String(url)] = new Headers(init?.headers).get("authorization");
+      return new Response(
+        JSON.stringify(String(url).endsWith("/api/sdk/config") ? { agent: { id: "t", status: "active" }, policy: null } : { approved: true }),
+        { status: 200 },
+      );
     }) as typeof fetch;
     try {
-      const client = fakeClient({
-        payTo: "api.new.io",
-        amountAtomic: "5000",
-        resourceUrl: "https://api.new.io/x",
-      });
+      const client = fakeClient({ payTo: "api.new.io", amountAtomic: "5000", resourceUrl: "https://api.new.io/x" });
       const pay = guardGateway(client, {
         agentId: "t",
         policy: HOLD_POLICY,
         apiKey: "sl_test_key_123",
+        serverUrl: "https://hook.test",
+        syncIntervalMs: 0,
       });
       await pay.fetch("https://api.new.io/x");
-      assert.equal(seenAuth, "Bearer sl_test_key_123");
+      await pay.drain();
+      return seen;
     } finally {
       globalThis.fetch = origFetch;
     }
+  }
+
+  it("REGRESSION: Spendlens's own escalation endpoint is called with the agent's API key, not anonymously", async () => {
+    // Spendlens's own /api/escalate requires an API key; without one the
+    // guard used to call the webhook with no Authorization header at all,
+    // which against the real endpoint means a 401 -> every hold silently
+    // resolves to denied.
+    const seen = await escalationAuth("https://hook.test/api/escalate");
+    assert.equal(seen["https://hook.test/api/escalate"], "Bearer sl_test_key_123");
+  });
+
+  it("REGRESSION: a third-party escalation webhook never receives the agent's API key", async () => {
+    const seen = await escalationAuth("https://ops.thirdparty.test/escalate");
+    assert.equal(seen["https://ops.thirdparty.test/escalate"], null);
   });
 
   describe("hold → escalation webhook", () => {

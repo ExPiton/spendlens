@@ -15,7 +15,9 @@ export function defaultPolicyYaml(slug: string, escalationWebhook?: string | nul
   const webhook = escalationWebhook ? JSON.stringify(escalationWebhook) : "null";
   return `# Spendlens policy for ${slug}
 # Starts permissive and observe-only. Tighten as you learn the agent's traffic:
-#   - set counterparties.mode to "allowlist" and fill counterparties.allow
+#   - set counterparties.mode to "allowlist" and fill counterparties.allow —
+#     then only those addresses can be paid; anything else is blocked (or held
+#     for your approval when first_seen.action is "hold")
 #   - lower the budgets and per_call limits
 #   - switch anomaly / first_seen actions from "alert" to "hold" or "block"
 version: 1

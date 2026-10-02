@@ -7,6 +7,7 @@ import { PolicyBlocked, EscalationDenied, SpendlensError } from "./errors";
 import {
   ControlPlane,
   assertMainnetPolicy,
+  defaultQueueOnError,
   isMainnet,
   loadPolicyInput,
   requestEscalation,
@@ -138,6 +139,8 @@ export class SpendlensGuard {
   private customFetch: typeof fetch;
   private escalationHandler?: (challenge: PaymentChallenge, ruleHit: string | null) => Promise<boolean>;
   private apiKey?: string;
+  /** The Spendlens server — the only origin the API key may be sent to. */
+  private serverUrl?: string;
   private control?: ControlPlane;
 
   constructor(options: GuardOptions) {
@@ -151,6 +154,7 @@ export class SpendlensGuard {
     const sink = resolveSink(options.sink);
     this.apiKey = options.apiKey ?? envValue("SPENDLENS_API_KEY");
     const serverUrl = resolveServerUrl(options.serverUrl, sink);
+    this.serverUrl = serverUrl;
     const remotePolicy =
       Boolean(serverUrl && this.apiKey) && (options.remotePolicy ?? localPolicy === undefined);
     assertMainnetPolicy(label, localPolicy !== undefined, remotePolicy);
@@ -181,6 +185,7 @@ export class SpendlensGuard {
       const control = this.control;
       this.queue = new AsyncLedgerQueue(sink, {
         headers: this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : undefined,
+        onError: defaultQueueOnError(label),
         onResponse: (res) =>
           control?.applyStatus(
             res.status === 423 ? "paused" : res.headers.get("x-spendlens-agent-status"),
@@ -331,7 +336,7 @@ export class SpendlensGuard {
             ruleHit: verdict.ruleHit,
             nonce: challenge.nonce ?? null,
           },
-          { apiKey: this.apiKey, fetchFn: this.customFetch },
+          { apiKey: this.apiKey, trustedOrigin: this.serverUrl, fetchFn: this.customFetch },
         ));
       }
 
@@ -358,7 +363,9 @@ export class SpendlensGuard {
           ...policyStamp,
         };
         this.queue?.enqueue(record);
-        throw new EscalationDenied(reason === "timeout" ? "timeout" : "rejected");
+        throw new EscalationDenied(
+          reason === "timeout" ? "timeout" : reason === "error" ? "unavailable" : "rejected",
+        );
       }
       // Approved → it will be paid, so it counts against every budget.
       this.policyEngine.recordHoldApproved(evalInput);
@@ -387,7 +394,11 @@ export class SpendlensGuard {
 
     // Step 6: Send request with payment authorization header
     const authHeaders = new Headers(requestInit?.headers || {});
-    authHeaders.set("Authorization", authorization.paymentHeader);
+    // `X-Payment-Authorization` always carries the payment; the standard
+    // `Authorization` header only when the caller isn't already using it for
+    // the API's own credentials — overwriting those broke paid APIs that
+    // also need the caller's own login.
+    if (!authHeaders.has("Authorization")) authHeaders.set("Authorization", authorization.paymentHeader);
     authHeaders.set("X-Payment-Authorization", authorization.paymentHeader);
     if (authorization.nonce) {
       authHeaders.set("X-Payment-Nonce", authorization.nonce);

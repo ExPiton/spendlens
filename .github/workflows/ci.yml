@@ -43,6 +43,15 @@ jobs:
           DATABASE_URL: postgres://build:build@127.0.0.1:5432/build
           NEXT_TELEMETRY_DISABLED: "1"
 
+      - name: Packed SDK loads from both CommonJS and ESM
+        # The published manifest once said "type": "module" over CommonJS
+        # output, so require("@spendlens/sdk") returned {} — no `guard`.
+        run: |
+          d="$(mktemp -d)" && cd "$d" && npm init -y >/dev/null \
+            && npm install --silent --no-audit --no-fund "$GITHUB_WORKSPACE/public/downloads/spendlens-sdk.tgz" \
+            && node -e "const m=require('@spendlens/sdk'); if (typeof m.guard!=='function') { console.error('require() exposes no guard'); process.exit(1) }" \
+            && node --input-type=module -e "const m=await import('@spendlens/sdk'); if (typeof m.guard!=='function') { console.error('import exposes no guard'); process.exit(1) }"
+
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=high
 

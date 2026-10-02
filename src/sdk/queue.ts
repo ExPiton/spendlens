@@ -25,6 +25,20 @@ export function registerAutoDrain(queue: AsyncLedgerQueue): void {
   });
 }
 
+/** The sink answered with an error that a retry cannot fix. */
+export class SinkRejected extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "SinkRejected";
+  }
+}
+
+function sinkHint(status: number): string {
+  if (status === 401 || status === 403) return " — check SPENDLENS_API_KEY (is it revoked, or for another agent?)";
+  if (status === 404 || status === 405) return " — the sink URL must be the ingest endpoint, e.g. https://<your-spendlens>/api/authorizations";
+  return "";
+}
+
 export type LedgerSink =
   | string // DSN or API URL e.g. "http://localhost:3000/api/authorizations"
   | ((records: AuthorizationRecord[]) => Promise<void>)
@@ -110,8 +124,12 @@ export class AsyncLedgerQueue {
         }
       }
     } catch (err) {
-      // Re-insert unwritten batch at head if space permits
-      if (this.buffer.length + batch.length <= this.maxBufferSize) {
+      // A permanent rejection (wrong URL, bad/revoked key…) can never succeed
+      // on a retry, and re-queueing the batch at the head would block every
+      // later record behind it forever — drop it and say so. Anything else
+      // (network, 5xx, 429) goes back to the head if there's space.
+      const permanent = err instanceof SinkRejected;
+      if (!permanent && this.buffer.length + batch.length <= this.maxBufferSize) {
         this.buffer.unshift(...batch);
       }
       if (this.onError) {
@@ -134,7 +152,14 @@ export class AsyncLedgerQueue {
       // an observer must never break delivery
     }
     if (!res.ok) {
-      throw new Error(`Failed to post telemetry to sink: ${res.status} ${res.statusText}`);
+      const message = `Failed to post telemetry to sink: ${res.status} ${res.statusText}`;
+      // 4xx other than 408 (timeout), 423 (agent halted on an older server —
+      // delivered once it resumes) and 429 (rate limit) will fail identically
+      // on every retry.
+      if (res.status >= 400 && res.status < 500 && ![408, 423, 429].includes(res.status)) {
+        throw new SinkRejected(`${message}${sinkHint(res.status)}`, res.status);
+      }
+      throw new Error(message);
     }
   }
 

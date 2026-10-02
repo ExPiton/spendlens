@@ -7,6 +7,7 @@ import {
   formatUsdcPrecise,
   formatUsdcTotal,
   formatPercent,
+  formatCount,
 } from "../src/lib/format";
 
 describe("Time/period formatting is pinned to UTC, not the runtime's local zone", () => {
@@ -38,7 +39,7 @@ describe("Time/period formatting is pinned to UTC, not the runtime's local zone"
       "2026-09-12T01:19:28.178Z",
       "2026-09-12T01:19:32.864Z", // max(ts) + 1ms, same calendar day as start
     );
-    assert.equal(label, "Sep 12 – 12, 2026 UTC");
+    assert.equal(label, "Sep 12, 2026 UTC");
   });
 
   test("formatTime renders the instant in UTC regardless of process.env.TZ", () => {
@@ -53,8 +54,16 @@ describe("Time/period formatting is pinned to UTC, not the runtime's local zone"
 });
 
 describe("USDC amount formatting — numbers align, down to the millionth", () => {
-  test("formatUsdcTotal keeps 2 decimals and groups thousands with a space", () => {
-    assert.equal(formatUsdcTotal(1_234_567_890), "1 234.57");
+  test("formatUsdcTotal keeps 2 decimals and groups thousands with a narrow no-break space", () => {
+    assert.equal(formatUsdcTotal(1_234_567_890), "1\u202f234.57");
+  });
+
+  test("REGRESSION: a grouped number never contains a breakable space", () => {
+    // A plain space let "1 801" wrap onto two lines in a narrow table cell.
+    for (const s of [formatUsdcTotal(1_234_567_890_000), formatCount(1801), formatUsdcPrecise(12_345_678_901)]) {
+      assert.doesNotMatch(s, / /, s);
+    }
+    assert.equal(formatCount(1801), "1\u202f801");
   });
 
   test("formatUsdcPrecise always shows all 6 decimals, down to the millionth", () => {

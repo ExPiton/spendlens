@@ -7,9 +7,13 @@ import { getSessionCookie } from "better-auth/cookies";
  * session cookie — never the DB — so it stays fast on every request. The real
  * enforcement is in the DAL (`requireUser` / `requireVerifiedUser`), close to
  * the data.
+ *
+ * It only ever sends a cookie-less visitor TO /login. The opposite hop
+ * (signed-in visitor on /login → /dashboard) must not be decided from the
+ * cookie alone — a stale cookie then loops /login ⇄ /dashboard forever — so
+ * the auth pages do it themselves, against the real session
+ * (`redirectIfSignedIn`).
  */
-
-const AUTH_PAGES = ["/login", "/signup", "/forgot-password", "/reset-password"];
 
 export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
@@ -19,10 +23,6 @@ export function proxy(request: NextRequest) {
     const url = new URL("/login", request.url);
     url.searchParams.set("next", pathname);
     return NextResponse.redirect(url);
-  }
-
-  if (hasSession && AUTH_PAGES.some((p) => pathname === p)) {
-    return NextResponse.redirect(new URL("/dashboard", request.url));
   }
 
   return NextResponse.next();

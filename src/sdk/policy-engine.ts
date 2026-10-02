@@ -37,6 +37,12 @@ export interface EvaluationVerdict {
   policyHash: string;
   /** Dashboard policy version, when the policy came from remote sync. */
   policyVersion: number | null;
+  /** Set when an `allow` went through only because the amount was at or
+   *  under `first_seen.auto_allow_below_usdc`. Such a payment does NOT vet
+   *  the counterparty: it stays "first seen", so a later, larger payment to
+   *  the same address still meets the first-seen gate instead of riding on a
+   *  micro-payment made to earn trust. */
+  autoAllowed?: boolean;
 }
 
 /** `YYYY-MM` of an epoch-ms timestamp, in UTC — the monthly budget bucket. */
@@ -241,19 +247,21 @@ export class InMemoryPolicyStateStore implements PolicyStateStore {
     }
     this.totalCallsMap.set(agentId, (this.totalCallsMap.get(agentId) || 0) + 1);
 
-    if (verdict.decision === "allow") this.bookSpend(input, now);
+    if (verdict.decision === "allow") this.bookSpend(input, now, verdict.autoAllowed !== true);
     this.onMutate();
   }
 
   recordSpend(input: EvaluationInput): void {
-    this.bookSpend(input, input.now ?? Date.now());
+    this.bookSpend(input, input.now ?? Date.now(), true);
     this.onMutate();
   }
 
-  private bookSpend(input: EvaluationInput, now: number): void {
+  /** `vet: false` books the spend but leaves the counterparty un-vetted (see
+   *  `EvaluationVerdict.autoAllowed`). */
+  private bookSpend(input: EvaluationInput, now: number, vet: boolean): void {
     const agentId = input.agentId;
     const seenKey = `${agentId}:${input.counterparty}`;
-    if (!this.seenCounterparties.has(seenKey)) {
+    if (vet && !this.seenCounterparties.has(seenKey)) {
       this.seenCounterparties.set(seenKey, now);
     }
     if (input.taskId) {
@@ -308,13 +316,16 @@ export class InMemoryPolicyStateStore implements PolicyStateStore {
  *   import { FilePolicyStateStore, PolicyEngine } from "@spendlens/sdk";
  *   const engine = new PolicyEngine(policy, new FilePolicyStateStore(".spendlens-state.json"));
  *
- * Writes are debounced (default 1s) and flushed on the Node `'exit'` event —
- * which fires on a normal exit *and* on the default (unhandled) disposition
- * of SIGINT/SIGTERM, so a plain `Ctrl+C` is covered without this class
- * installing its own signal handlers. It deliberately never calls
- * `process.exit()` itself: a library forcing process termination could cut
- * off a host application's own shutdown sequence (other 'exit'/SIGINT
- * listeners, in-flight requests) if this one happened to run first.
+ * Writes are debounced (default 1s) and flushed on the Node `'exit'` event
+ * (normal exit) and on SIGINT / SIGTERM. The signals need their own handler:
+ * Node terminates on their default disposition WITHOUT emitting `'exit'`, so
+ * without it every Ctrl+C, `docker stop` and `kill` threw away up to a
+ * debounce window of budget state. The handler flushes and then re-raises the
+ * signal so the default termination still happens — unless the host app has
+ * its own listener for it, in which case the host owns shutdown and this
+ * class only flushes. It deliberately never calls `process.exit()` itself: a
+ * library forcing process termination could cut off a host application's own
+ * shutdown sequence (other listeners, in-flight requests).
  * Single-process only — concurrent writers would clobber each other.
  * Node-only (uses `node:fs`); a bad/missing file just starts the store empty.
  */
@@ -328,6 +339,14 @@ export class FilePolicyStateStore extends InMemoryPolicyStateStore {
     super();
     this.load();
     process.once("exit", () => this.flush());
+    for (const signal of ["SIGINT", "SIGTERM"] as const) {
+      process.once(signal, () => {
+        this.flush();
+        // `once` already removed this listener; if nobody else is listening,
+        // restore the default behaviour (terminate) by re-raising.
+        if (process.listenerCount(signal) === 0) process.kill(process.pid, signal);
+      });
+    }
   }
 
   private load(): void {
@@ -516,6 +535,13 @@ export class PolicyEngine {
     // 0. Kill switch — nothing else matters while the agent is halted.
     if (this.haltedRule) return finish(verdictOf("block", this.haltedRule));
 
+    // The amount comes from the paid server's 402. A negative one would be
+    // booked as negative spend (refilling every budget), NaN / Infinity slip
+    // past every `>` comparison below — refuse them outright.
+    if (!Number.isFinite(amount) || amount < 0) {
+      return finish(verdictOf("block", "challenge.invalid_amount"));
+    }
+
     // 1. Deny list
     if (this.deny.has(counterparty)) {
       return finish(verdictOf("block", "counterparties.deny"));
@@ -553,22 +579,40 @@ export class PolicyEngine {
     let alertRuleHit: string | null = null;
     let alertAnomalyZ: number | undefined;
 
-    // 4. Counterparty first-seen gate. Applies in both allowlist and
-    // denylist mode — first contact with any address that isn't already
-    // explicitly trusted (`allow`) or previously vetted (a prior paid call)
-    // must clear `first_seen` before going further. This is the primary
-    // defense against a prompt-injection redirect to an address the
-    // attacker controls. Once vetted, a counterparty is not re-gated.
+    // 4. Counterparty gate — the primary defense against a prompt-injection
+    // redirect to an address the attacker controls. A counterparty that is
+    // neither explicitly trusted (`allow`) nor already vetted (a human
+    // approved a hold for it, or it cleared this gate before) is "first
+    // seen" and must pass here before going further.
+    //
+    //  - `mode: allowlist` is strict: only `allow` (and what a human approved)
+    //    gets through. An unlisted counterparty is held when
+    //    `first_seen.action` is `hold` (a person decides) and blocked
+    //    otherwise — `alert` / `allow` would make the list decorative — and
+    //    the micro-payment exemption below does not apply.
+    //  - `mode: denylist` runs `first_seen.action` as configured, except that
+    //    a payment at or under `auto_allow_below_usdc` is waved through.
+    //    That exemption does NOT vet the counterparty (see
+    //    `EvaluationVerdict.autoAllowed`): a micro-payment used to whitelist
+    //    the address forever, so an attacker could earn trust with a $0.0009
+    //    call and then be paid $0.90.
     const isAllowlisted = this.allow.has(counterparty);
     const isSeen = store.isCounterpartySeen(agentId, counterparty);
+    const strictAllowlist = policy.counterparties.mode === "allowlist";
+    let autoAllowed = false;
     if (!isAllowlisted && !isSeen) {
       store.recordFirstContact(agentId, counterparty, now);
-      if (amount > policy.counterparties.firstSeen.autoAllowBelowUsdc) {
-        const action = policy.counterparties.firstSeen.action;
-        if (action === "block" || action === "hold") {
-          return finish(verdictOf(action, "counterparties.first_seen.action"));
-        }
-        if (action === "alert") alertRuleHit = "counterparties.first_seen.action";
+      const action = policy.counterparties.firstSeen.action;
+      if (!strictAllowlist && amount <= policy.counterparties.firstSeen.autoAllowBelowUsdc) {
+        autoAllowed = true;
+      } else if (action === "hold") {
+        return finish(verdictOf("hold", "counterparties.first_seen.action"));
+      } else if (strictAllowlist) {
+        return finish(verdictOf("block", "counterparties.allowlist"));
+      } else if (action === "block") {
+        return finish(verdictOf("block", "counterparties.first_seen.action"));
+      } else if (action === "alert") {
+        alertRuleHit = "counterparties.first_seen.action";
       }
     }
 
@@ -642,6 +686,8 @@ export class PolicyEngine {
     // Default allow — carries an alert signal (ruleHit set, decision still
     // "allow") if one of the alert-only rules above fired without anything
     // blocking or holding the call.
-    return finish(verdictOf("allow", alertRuleHit, alertAnomalyZ ?? ewmaResult.z));
+    const allowed = verdictOf("allow", alertRuleHit, alertAnomalyZ ?? ewmaResult.z);
+    if (autoAllowed) allowed.autoAllowed = true;
+    return finish(allowed);
   }
 }

@@ -24,6 +24,20 @@ export async function requireUser() {
   return session;
 }
 
+/**
+ * Sends a visitor who is already signed in away from /login, /signup, … to the
+ * dashboard. This checks the real session, not just the cookie: the proxy can
+ * only see that a session cookie EXISTS, and bouncing on that alone sent
+ * anyone holding a stale one (session revoked, database restored, account
+ * deleted elsewhere) round /login → /dashboard → /login … until the browser
+ * gave up with "too many redirects" — with no way out short of clearing
+ * cookies by hand.
+ */
+export async function redirectIfSignedIn(): Promise<void> {
+  const session = await getOptionalUser();
+  if (session?.user) redirect("/dashboard");
+}
+
 /** The gate every dashboard surface uses: signed in, and — whenever
  *  verification is required (see `emailVerificationRequired`) — with a
  *  verified e-mail address. */

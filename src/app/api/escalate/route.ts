@@ -3,7 +3,7 @@ import { z } from "zod";
 import { requireApiKey, isResponse } from "@/lib/auth/api";
 import { enforceRateLimit } from "@/lib/rate-limit";
 import { getPolicyBySlug } from "@/lib/db/policy";
-import { createEscalation } from "@/lib/db/escalations";
+import { countRecentEscalations, createEscalation } from "@/lib/db/escalations";
 import { normalizeCounterparty } from "@/lib/counterparty";
 import { notifyEscalation } from "@/lib/alerts";
 
@@ -40,6 +40,12 @@ const BodySchema = z.object({
   taskId: z.string().nullish(),
   nonce: z.string().nullish(),
 });
+
+/** At most this many approval e-mails per tenant per 10 minutes. Every hold
+ *  used to send one — a leaked key, or an agent stuck in a retry loop, could
+ *  mail the owner up to 240 times a minute. Holds beyond it are still queued
+ *  (the dashboard's Approvals badge counts them); only the e-mail is skipped. */
+const MAX_APPROVAL_EMAILS_PER_10_MIN = 5;
 
 /** Bounds on how long a hold may wait for a person. */
 const MIN_WAIT_S = 10;
@@ -113,9 +119,12 @@ export async function POST(request: NextRequest) {
     }
 
     const esc = await createEscalation(base);
-    await notifyEscalation(key.userId, esc).catch((err) =>
-      console.error("[spendlens] escalation e-mail failed:", err),
-    );
+    // The count includes the row just created.
+    if ((await countRecentEscalations(key.userId, 600)) <= MAX_APPROVAL_EMAILS_PER_10_MIN) {
+      await notifyEscalation(key.userId, esc).catch((err) =>
+        console.error("[spendlens] escalation e-mail failed:", err),
+      );
+    }
     return NextResponse.json(
       {
         approved: false,
